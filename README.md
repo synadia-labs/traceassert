@@ -58,10 +58,11 @@ import (
 
 ## Input: the expanded trace format
 
-`traceassert` reads a **pre-parsed JSON trace** (the *expanded* format): a self-contained
-document of fully decoded protocol frames — every `PUB`/`HPUB`/`SUB`/`UNSUB`/`MSG`/`HMSG`,
-plus `CONNECT`, `INFO`, `-ERR`, `PING` and `PONG`. Loading needs nothing but the standard
-library; there is no protocol parser in this package.
+`traceassert` reads a **pre-parsed trace** (the *expanded* format): a
+[JSON Lines](https://jsonlines.org) document of fully decoded protocol frames — a header
+line, then one line per frame (every `PUB`/`HPUB`/`SUB`/`UNSUB`/`MSG`/`HMSG`, plus
+`CONNECT`, `INFO`, `-ERR`, `PING` and `PONG`), then a footer line. Loading needs nothing
+but the standard library; there is no protocol parser in this package.
 
 You produce an expanded trace from a captured NATS connection with the companion
 `traceassert` CLI (distributed as a binary):
@@ -77,7 +78,12 @@ traceassert convert ./captures/client_abc.trace      # -> client_abc.expanded.js
 traceassert view ./captures/client_abc.expanded.json --verb PUB --subject 'orders.>'
 ```
 
-The format is plain JSON, so fixtures are easy to commit, diff, and review.
+Because it is line-oriented, the format **streams on both ends**: producing or reading a
+trace never holds more than a single frame in memory, so captures of any size are handled.
+`LoadExpanded` still returns a fully materialized `*Trace` (the matchers query it
+repeatedly); to consume an arbitrarily large trace one frame at a time instead, use
+`ScanExpanded`. It is plain JSON, one object per line, so fixtures stay easy to commit,
+diff, and review.
 
 ## Quick start
 
@@ -157,6 +163,7 @@ type Event struct {
     Queue   string
     Header  map[string][]string // HPUB/HMSG headers
     Payload []byte              // body; for CONNECT/INFO the JSON, for -ERR the error text
+    WireBytes int               // size of the raw on-the-wire frame (verb+subject+headers+framing), 0 if unknown
 }
 ```
 

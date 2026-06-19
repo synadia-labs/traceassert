@@ -1,0 +1,12 @@
+{
+  "server": "nats://127.0.0.1:4223",
+  "name": "adr50-fast-ingest",
+  "stream": "TEST",
+  "subjects": ["TEST.>"],
+  "messages": 500,
+  "create": true,
+  "gap": "ok",
+  "flow": 100,
+  "max_outstanding_acks": 2,
+  "payload": "hello"
+}

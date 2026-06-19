@@ -116,7 +116,7 @@ func TestUseOldStyleInbox(t *testing.T) {
 	bad.Pub("foo", "_INBOX.batch1.1.0.$FI", []byte("m"))
 	g.Expect(loadTrace(t, bad)).NotTo(UseOldStyleInbox("_INBOX"))
 
-	// a custom inbox prefix is honoured.
+	// a custom inbox prefix is honored.
 	custom := tracegen.New("client")
 	custom.Info(`{}`).Connect("{}")
 	custom.Sub("my.inbox."+nuid+".>", "1")
@@ -150,7 +150,7 @@ func TestUseNewStyleInbox(t *testing.T) {
 	badSuffix.Pub("foo", "_INBOX."+nuid+".AB", []byte("m")) // 2-char suffix
 	g.Expect(loadTrace(t, badSuffix)).NotTo(UseNewStyleInbox("_INBOX"))
 
-	// a custom inbox prefix is honoured.
+	// a custom inbox prefix is honored.
 	custom := tracegen.New("client")
 	custom.Info(`{}`).Connect("{}")
 	custom.Sub("my.inbox."+nuid+".*", "1")

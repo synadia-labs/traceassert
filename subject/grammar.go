@@ -52,7 +52,8 @@ type token struct {
 type Grammar struct {
 	spec   string
 	tokens []token
-	restAt int // index of the rest token, or -1
+	names  map[string]int // capture name -> token index (for Builder.Set)
+	restAt int            // index of the rest token, or -1
 }
 
 // MustParse is Parse but panics on an invalid spec. Intended for package-level vars:
@@ -74,7 +75,7 @@ func Parse(spec string) (*Grammar, error) {
 
 	parts := strings.Split(spec, ".")
 	g := &Grammar{spec: spec, restAt: -1}
-	seen := make(map[string]bool, len(parts))
+	g.names = make(map[string]int, len(parts))
 
 	for i, p := range parts {
 		tok, err := parseToken(p)
@@ -93,10 +94,10 @@ func Parse(spec string) (*Grammar, error) {
 			if tok.name == "" {
 				return nil, fmt.Errorf("token %d: capture name is required", i+1)
 			}
-			if seen[tok.name] {
+			if _, dup := g.names[tok.name]; dup {
 				return nil, fmt.Errorf("duplicate capture name %q", tok.name)
 			}
-			seen[tok.name] = true
+			g.names[tok.name] = len(g.tokens)
 		}
 
 		g.tokens = append(g.tokens, tok)
