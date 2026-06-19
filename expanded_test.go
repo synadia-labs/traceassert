@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
+
+	"github.com/synadia-labs/traceassert/tracegen"
 )
 
 // TestExpanded_RoundTrip loads an expanded fixture, re-serializes it with
@@ -50,6 +53,61 @@ func TestExpanded_RoundTrip(t *testing.T) {
 		if !a.At.Equal(b.At) {
 			t.Errorf("event %d timestamp = %s, want %s", i, b.At, a.At)
 		}
+	}
+}
+
+// TestExpanded_PreservesHeadersAndWireBytes checks that message headers and the
+// recorded wire size survive both the initial expanded render and a WriteExpanded
+// round trip — the two places a serialization gap would silently drop them.
+func TestExpanded_PreservesHeadersAndWireBytes(t *testing.T) {
+	header := map[string][]string{
+		"Nats-Msg-Id": {"abc"},
+		"X-Custom":    {"v1", "v2"},
+	}
+
+	b := tracegen.New("client")
+	b.Info(`{"server_id":"test"}`)
+	b.Connect("{}")
+	b.HPub("ORDERS", "_INBOX.reply", header, []byte("hello"))
+
+	first := loadExpanded(t, b)
+
+	hpub, ok := first.First(func(e *Event) bool { return e.Verb == "HPUB" })
+	if !ok {
+		t.Fatal("no HPUB event in fixture")
+	}
+	if !reflect.DeepEqual(hpub.Header, header) {
+		t.Fatalf("HPUB header = %v, want %v", hpub.Header, header)
+	}
+	if hpub.WireBytes <= 0 {
+		t.Fatalf("HPUB WireBytes = %d, want > 0", hpub.WireBytes)
+	}
+
+	path := filepath.Join(t.TempDir(), "round-trip.expanded.json")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteExpanded(f, first); err != nil {
+		t.Fatalf("WriteExpanded: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := LoadExpanded(path)
+	if err != nil {
+		t.Fatalf("LoadExpanded: %v", err)
+	}
+	reloaded, ok := second.First(func(e *Event) bool { return e.Verb == "HPUB" })
+	if !ok {
+		t.Fatal("no HPUB event after round trip")
+	}
+	if !reflect.DeepEqual(reloaded.Header, header) {
+		t.Errorf("round-tripped header = %v, want %v", reloaded.Header, header)
+	}
+	if reloaded.WireBytes != hpub.WireBytes {
+		t.Errorf("round-tripped WireBytes = %d, want %d", reloaded.WireBytes, hpub.WireBytes)
 	}
 }
 
