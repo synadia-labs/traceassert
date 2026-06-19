@@ -45,6 +45,12 @@ type Event struct {
 	Header  map[string][]string // parsed HPUB/HMSG headers (nil otherwise)
 	Payload []byte              // message body; for CONNECT/INFO the JSON, for -ERR the error text
 
+	// WireBytes is the size of the original on-the-wire frame in bytes, including the
+	// verb, subject, headers and protocol framing — not just the payload. It is the
+	// length of the raw ADR-2 frame the capture recorded; 0 when unknown (e.g. an
+	// expanded document written before this field existed).
+	WireBytes int
+
 	tokens []string // lazy: Subject split on '.'
 }
 

@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 )
 
@@ -35,6 +36,7 @@ type frame struct {
 	subject string
 	reply   string
 	sid     string
+	header  map[string][]string
 	payload []byte
 	raw     []byte
 }
@@ -114,6 +116,65 @@ func (b *Builder) MsgString(subject, sid, payload string) *Builder {
 	return b.Msg(subject, sid, "", []byte(payload))
 }
 
+// HPub adds a client HPUB carrying headers (reply may be empty).
+func (b *Builder) HPub(subject, reply string, header map[string][]string, payload []byte) *Builder {
+	hdr := headerBlock(header)
+	var sb strings.Builder
+	sb.WriteString("HPUB ")
+	sb.WriteString(subject)
+	if reply != "" {
+		sb.WriteByte(' ')
+		sb.WriteString(reply)
+	}
+	fmt.Fprintf(&sb, " %d %d\r\n", len(hdr), len(hdr)+len(payload))
+	sb.WriteString(hdr)
+	sb.Write(payload)
+	sb.WriteString("\r\n")
+	return b.add(frame{dir: "backend", verb: "HPUB", subject: subject, reply: reply, header: header, payload: payload, raw: []byte(sb.String())})
+}
+
+// HMsg adds a server HMSG carrying headers, delivered to subject on sid (reply may be empty).
+func (b *Builder) HMsg(subject, sid, reply string, header map[string][]string, payload []byte) *Builder {
+	hdr := headerBlock(header)
+	var sb strings.Builder
+	sb.WriteString("HMSG ")
+	sb.WriteString(subject)
+	sb.WriteByte(' ')
+	sb.WriteString(sid)
+	if reply != "" {
+		sb.WriteByte(' ')
+		sb.WriteString(reply)
+	}
+	fmt.Fprintf(&sb, " %d %d\r\n", len(hdr), len(hdr)+len(payload))
+	sb.WriteString(hdr)
+	sb.Write(payload)
+	sb.WriteString("\r\n")
+	return b.add(frame{dir: "client", verb: "HMSG", subject: subject, sid: sid, reply: reply, header: header, payload: payload, raw: []byte(sb.String())})
+}
+
+// headerBlock renders headers as a NATS/1.0 header block, with keys sorted so the
+// wire frame is stable, including the trailing blank line that separates the headers
+// from the body.
+func headerBlock(header map[string][]string) string {
+	var sb strings.Builder
+	sb.WriteString("NATS/1.0\r\n")
+	keys := make([]string, 0, len(header))
+	for k := range header {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		for _, v := range header[k] {
+			sb.WriteString(k)
+			sb.WriteString(": ")
+			sb.WriteString(v)
+			sb.WriteString("\r\n")
+		}
+	}
+	sb.WriteString("\r\n")
+	return sb.String()
+}
+
 // --- ADR-2 rendering (base64 wire frames) ---------------------------------
 
 // Bytes renders the trace as an ADR-2 file. If footer is true a completion line is
@@ -163,14 +224,16 @@ type expFooter struct {
 }
 
 type expEvent struct {
-	Line    int    `json:"line"`
-	At      string `json:"at"`
-	Dir     string `json:"dir"`
-	Verb    string `json:"verb,omitempty"`
-	Subject string `json:"subject,omitempty"`
-	Reply   string `json:"reply,omitempty"`
-	SID     string `json:"sid,omitempty"`
-	Payload []byte `json:"payload,omitempty"`
+	Line    int                 `json:"line"`
+	At      string              `json:"at"`
+	Dir     string              `json:"dir"`
+	Verb    string              `json:"verb,omitempty"`
+	Subject string              `json:"subject,omitempty"`
+	Reply   string              `json:"reply,omitempty"`
+	SID     string              `json:"sid,omitempty"`
+	Header  map[string][]string `json:"header,omitempty"`
+	Payload []byte              `json:"payload,omitempty"`
+	Bytes   int                 `json:"bytes,omitempty"`
 }
 
 // ExpandedBytes renders the trace as a traceassert expanded document. If footer is
@@ -197,7 +260,9 @@ func (b *Builder) ExpandedBytes(footer bool) []byte {
 			Subject: f.subject,
 			Reply:   f.reply,
 			SID:     f.sid,
+			Header:  f.header,
 			Payload: f.payload,
+			Bytes:   len(f.raw),
 		})
 	}
 	out, _ := json.MarshalIndent(&doc, "", "  ")

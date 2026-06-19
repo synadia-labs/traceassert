@@ -46,6 +46,7 @@ type expandedEvent struct {
 	Queue   string              `json:"queue,omitempty"`
 	Header  map[string][]string `json:"header,omitempty"`
 	Payload []byte              `json:"payload,omitempty"`
+	Bytes   int                 `json:"bytes,omitempty"`
 }
 
 // WriteExpanded serializes a decoded Trace to the expanded JSON format.
@@ -70,6 +71,7 @@ func WriteExpanded(w io.Writer, t *Trace) error {
 			Queue:   e.Queue,
 			Header:  e.Header,
 			Payload: e.Payload,
+			Bytes:   e.WireBytes,
 		}
 	}
 
@@ -105,17 +107,18 @@ func LoadExpanded(path string) (*Trace, error) {
 			dir = FromServer
 		}
 		events[i] = &Event{
-			Line:    ee.Line,
-			At:      ee.At,
-			ID:      ee.ID,
-			Dir:     dir,
-			Verb:    ee.Verb,
-			Subject: ee.Subject,
-			Reply:   ee.Reply,
-			SID:     ee.SID,
-			Queue:   ee.Queue,
-			Header:  ee.Header,
-			Payload: ee.Payload,
+			Line:      ee.Line,
+			At:        ee.At,
+			ID:        ee.ID,
+			Dir:       dir,
+			Verb:      ee.Verb,
+			Subject:   ee.Subject,
+			Reply:     ee.Reply,
+			SID:       ee.SID,
+			Queue:     ee.Queue,
+			Header:    ee.Header,
+			Payload:   ee.Payload,
+			WireBytes: ee.Bytes,
 		}
 	}
 
