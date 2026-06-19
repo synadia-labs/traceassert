@@ -122,3 +122,63 @@ func TestLoadExpanded_RejectsForeignJSON(t *testing.T) {
 		t.Fatal("expected error loading non-expanded JSON, got nil")
 	}
 }
+
+// TestExpanded_Truncated checks that a footer-less expanded document (a capture cut
+// short) loads as Truncated — the no-footer path of the JSON Lines reader.
+func TestExpanded_Truncated(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "truncated.expanded.json")
+	if err := fastIngestBuilder().WriteExpandedFileTruncated(path); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	tr, err := LoadExpanded(path)
+	if err != nil {
+		t.Fatalf("LoadExpanded: %v", err)
+	}
+	if !tr.Truncated() {
+		t.Error("expected Truncated()=true for a footer-less expanded trace")
+	}
+	if len(tr.Events) == 0 {
+		t.Error("expected events to load even without a footer")
+	}
+}
+
+// TestScanExpanded_StreamsEvents checks the single-pass streaming reader: it yields the
+// same events LoadExpanded materializes, and reports the footer once drained.
+func TestScanExpanded_StreamsEvents(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "stream.expanded.json")
+	if err := fastIngestBuilder().WriteExpandedFile(path); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	want, err := LoadExpanded(path)
+	if err != nil {
+		t.Fatalf("LoadExpanded: %v", err)
+	}
+
+	s, err := ScanExpanded(path)
+	if err != nil {
+		t.Fatalf("ScanExpanded: %v", err)
+	}
+	defer s.Close()
+
+	got := 0
+	for e, err := range s.Events() {
+		if err != nil {
+			t.Fatalf("stream event %d: %v", got, err)
+		}
+		if got >= len(want.Events) {
+			t.Fatalf("streamed more events than the %d LoadExpanded returned", len(want.Events))
+		}
+		if w := want.Events[got]; e.Line != w.Line || e.Verb != w.Verb || e.Subject != w.Subject {
+			t.Errorf("event %d mismatch: got %s, want %s", got, e, w)
+		}
+		got++
+	}
+	if got != len(want.Events) {
+		t.Fatalf("streamed %d events, want %d", got, len(want.Events))
+	}
+	if s.Truncated() || s.Footer() == nil {
+		t.Error("expected a footer to be populated after draining a complete trace")
+	}
+}

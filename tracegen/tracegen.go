@@ -7,6 +7,7 @@
 package tracegen
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -24,7 +25,7 @@ const (
 	// as literals (rather than imported) so tracegen stays free of any traceassert
 	// import — keeping the assertion package's own (internal) tests cycle-free.
 	expandedFormat  = "traceassert-expanded"
-	expandedVersion = 1
+	expandedVersion = 2
 )
 
 // frame is one captured protocol frame in structured form. raw is the NATS wire
@@ -204,12 +205,18 @@ func (b *Builder) WriteFileTruncated(path string) error {
 
 // --- expanded rendering (pre-parsed JSON) ---------------------------------
 
-type expDoc struct {
-	Format  string     `json:"format"`
-	Version int        `json:"version"`
-	Header  expHeader  `json:"header"`
-	Footer  *expFooter `json:"footer,omitempty"`
-	Events  []expEvent `json:"events"`
+// expHeaderLine, expEvent and expFooterLine are the three JSON Lines record shapes of
+// the expanded v2 format: the header line, one event line per frame, and the footer
+// line. They mirror traceassert's on-disk shape so a tracegen fixture loads via
+// traceassert.LoadExpanded.
+type expHeaderLine struct {
+	Format  string    `json:"format"`
+	Version int       `json:"version"`
+	Header  expHeader `json:"header"`
+}
+
+type expFooterLine struct {
+	Footer expFooter `json:"footer"`
 }
 
 type expHeader struct {
@@ -236,23 +243,28 @@ type expEvent struct {
 	Bytes   int                 `json:"bytes,omitempty"`
 }
 
-// ExpandedBytes renders the trace as a traceassert expanded document. If footer is
-// true the completion record is included; omit it to simulate a truncated trace.
+// ExpandedBytes renders the trace as a traceassert expanded document (JSON Lines: a
+// header line, one line per event, then a footer line). If footer is true the
+// completion record is included; omit it to simulate a truncated trace.
 func (b *Builder) ExpandedBytes(footer bool) []byte {
-	doc := expDoc{
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+
+	// Encode writes each value on its own line (with a trailing newline), so the buffer
+	// ends up as one JSON record per line — the expanded v2 shape. Writes to a
+	// bytes.Buffer never fail, so the errors are deliberately ignored.
+	_ = enc.Encode(expHeaderLine{
 		Format:  expandedFormat,
 		Version: expandedVersion,
 		Header:  expHeader{Version: 1, Device: "tracegen", Protocol: b.protocol},
-	}
-	if footer {
-		doc.Footer = &expFooter{Timestamp: footerTS, Duration: footerNs}
-	}
+	})
 	for i, f := range b.frames {
 		dir := "to_server"
 		if f.dir == "client" {
 			dir = "from_server"
 		}
-		doc.Events = append(doc.Events, expEvent{
+		_ = enc.Encode(expEvent{
 			Line:    i + 2, // header is line 1
 			At:      frameTS,
 			Dir:     dir,
@@ -265,8 +277,10 @@ func (b *Builder) ExpandedBytes(footer bool) []byte {
 			Bytes:   len(f.raw),
 		})
 	}
-	out, _ := json.MarshalIndent(&doc, "", "  ")
-	return append(out, '\n')
+	if footer {
+		_ = enc.Encode(expFooterLine{Footer: expFooter{Timestamp: footerTS, Duration: footerNs}})
+	}
+	return buf.Bytes()
 }
 
 // WriteExpandedFile renders the expanded trace (with footer) to path.
