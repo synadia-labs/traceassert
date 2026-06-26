@@ -17,9 +17,6 @@
 package main_test
 
 import (
-	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -57,27 +54,6 @@ const (
 	opCommitEOB   = 3 // commit without storing the final message
 	opPing        = 4 // keep-alive / recover lost acks
 )
-
-const pubAckType = "io.nats.jetstream.api.v1.pub_ack_response"
-
-// loadCapture loads an expanded trace from $envVar, or testdata/<file>. A missing,
-// unreadable, or truncated capture is a hard failure — never a skip — so a green
-// run always means real evidence was asserted, not that the capture was quietly
-// absent. Produce captures as described in README.md.
-func loadCapture(file, envVar string) *traceassert.Trace {
-	path := os.Getenv(envVar)
-	if path == "" {
-		path = filepath.Join("testdata", file)
-	}
-	_, statErr := os.Stat(path)
-	Expect(statErr).NotTo(HaveOccurred(),
-		fmt.Sprintf("capture %q not present — produce one as described in README.md", path))
-	tr, err := traceassert.LoadExpanded(path)
-	Expect(err).NotTo(HaveOccurred(), fmt.Sprintf("loading capture %q", path))
-	Expect(tr.Truncated()).To(BeFalse(),
-		fmt.Sprintf("capture %q is truncated (the proxy cut it short) — recapture as described in README.md", path))
-	return tr
-}
 
 // clientBatchPubs are the client→server fast-ingest publishes (their reply subject
 // carries the $FI control plane).
@@ -144,7 +120,7 @@ var _ = Describe("ADR-50 fast-ingest batch publishing", func() {
 		)
 
 		BeforeEach(func() {
-			trace = loadCapture("fastbatch.expanded.json", "ADR50_CAPTURE")
+			trace = MustLoadCapture("fastbatch.expanded.json")
 
 			pubs = clientBatchPubs(trace)
 			Expect(pubs).NotTo(BeEmpty(), "capture contains no fast-ingest publishes")
@@ -177,7 +153,8 @@ var _ = Describe("ADR-50 fast-ingest batch publishing", func() {
 			Expect(b.ToServer()).NotTo(BeEmpty())
 		})
 
-		It("FB-101: the stream is created with AllowBatchPublish enabled", func() {
+		It("FB-101: the stream-create reply confirms AllowBatchPublish at API level >= 4", func() {
+			// Find the client's stream-create request; if the stream pre-existed there is none.
 			create, ok := trace.First(func(e *traceassert.Event) bool {
 				return e.Dir == traceassert.ToServer && streamCreate.Matches(e.Subject)
 			})
@@ -185,16 +162,19 @@ var _ = Describe("ADR-50 fast-ingest batch publishing", func() {
 				Skip("capture has no STREAM.CREATE (stream pre-existed) — re-run the CLI with create:true")
 			}
 
-			// The create request must be a schema-valid JetStream API request and
-			// carry allow_batched.
-			Expect(create).To(BeValidJetStreamRequest())
-			Expect(create).To(PayloadJSON("allow_batched", BeTrue()))
+			// The server's reply, delivered on that request's inbox, is the authoritative
+			// record that the stream now exists exactly as configured.
+			reply, ok := trace.First(func(e *traceassert.Event) bool {
+				return e.Dir == traceassert.FromServer && e.Subject == create.Reply
+			})
+			Expect(ok).To(BeTrue(), "no server reply to the stream-create request")
 
-			// Fast-ingest requires server API level >= 4 (server 2.14+); the INFO
-			// preamble carries the negotiated level.
-			info, ok := trace.First(func(e *traceassert.Event) bool { return e.Verb == "INFO" })
-			Expect(ok).To(BeTrue())
-			Expect(info).To(PayloadJSON("api_lvl", BeNumerically(">=", 4)))
+			// It was created with fast-ingest batch publishing enabled ...
+			Expect(reply).To(DecodeJetStream(HaveField("Config.AllowBatchPublish", BeTrue())))
+
+			// ... and the stream is hosted at API level >= 4 (server 2.14+). This is already
+			// implied by allow_batched validating, but assert the hosted level explicitly.
+			Expect(reply).To(HaveAPILevel(BeNumerically(">=", 4)))
 		})
 
 		It("FB-301: establishes, appends, then commits a contiguous, in-order batch", func() {
@@ -211,7 +191,7 @@ var _ = Describe("ADR-50 fast-ingest batch publishing", func() {
 			// The batch commits with a final pub ack carrying batch + count.
 			commit := lastCommitAck(replies)
 			Expect(commit).NotTo(BeNil(), "no commit pub ack found on the control channel")
-			Expect(commit).To(DecodeJetStreamAs(pubAckType, And(
+			Expect(commit).To(DecodeJetStreamAs("io.nats.jetstream.api.v1.pub_ack_response", And(
 				HaveField("BatchSize", Equal(expectedCount(nonPing))),
 				HaveField("BatchId", Not(BeEmpty())),
 				HaveField("Sequence", BeNumerically(">", 0)),
@@ -261,7 +241,7 @@ var _ = Describe("ADR-50 fast-ingest batch publishing", func() {
 		It("FB-1401: the final PubAck carries batch and count", func() {
 			commit := lastCommitAck(replies)
 			Expect(commit).NotTo(BeNil())
-			Expect(commit).To(DecodeJetStreamAs(pubAckType, And(
+			Expect(commit).To(DecodeJetStreamAs("io.nats.jetstream.api.v1.pub_ack_response", And(
 				HaveField("BatchSize", Equal(expectedCount(nonPing))),
 				HaveField("BatchId", Not(BeEmpty())),
 			)))
@@ -292,7 +272,7 @@ var _ = Describe("ADR-50 fast-ingest batch publishing", func() {
 		var pubs []*traceassert.Event
 
 		BeforeEach(func() {
-			trace = loadCapture("single.expanded.json", "ADR50_CAPTURE_SINGLE")
+			trace = MustLoadCapture("single.expanded.json")
 			pubs = clientBatchPubs(trace)
 		})
 
@@ -308,7 +288,7 @@ var _ = Describe("ADR-50 fast-ingest batch publishing", func() {
 				Expect(hasTypeField(e)).To(BeFalse(),
 					"single immediate commit must not be preceded by a BatchFlowAck")
 			}
-			Expect(replies[len(replies)-1]).To(DecodeJetStreamAs(pubAckType,
+			Expect(replies[len(replies)-1]).To(DecodeJetStreamAs("io.nats.jetstream.api.v1.pub_ack_response",
 				HaveField("BatchSize", Equal(1))))
 		})
 	})

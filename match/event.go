@@ -31,12 +31,25 @@ func BeVerb(verb string) M {
 	return eventPred(fmt.Sprintf("be a %s", verb), func(e *traceassert.Event) bool { return e.Verb == verb })
 }
 
-func BePub() M     { return BeVerb("PUB") }
-func BeHPub() M    { return BeVerb("HPUB") }
-func BeSub() M     { return BeVerb("SUB") }
-func BeUnsub() M   { return BeVerb("UNSUB") }
-func BeMsg() M     { return BeVerb("MSG") }
-func BeHMsg() M    { return BeVerb("HMSG") }
+// BePub matches a PUB frame: a client publish without headers.
+func BePub() M { return BeVerb("PUB") }
+
+// BeHPub matches an HPUB frame: a client publish carrying headers.
+func BeHPub() M { return BeVerb("HPUB") }
+
+// BeSub matches a SUB frame: a client subscription.
+func BeSub() M { return BeVerb("SUB") }
+
+// BeUnsub matches an UNSUB frame: a client unsubscribe.
+func BeUnsub() M { return BeVerb("UNSUB") }
+
+// BeMsg matches a MSG frame: a message the server delivered to the client, without headers.
+func BeMsg() M { return BeVerb("MSG") }
+
+// BeHMsg matches an HMSG frame: a message the server delivered to the client, with headers.
+func BeHMsg() M { return BeVerb("HMSG") }
+
+// BeConnect matches a CONNECT frame: the client's connect handshake.
 func BeConnect() M { return BeVerb("CONNECT") }
 
 // --- request / reply -----------------------------------------------------------
@@ -96,20 +109,26 @@ func ReplyCapture(g *subject.Grammar, name string, m gtypes.GomegaMatcher) M {
 }
 
 func capture(get func(*traceassert.Event) string, g *subject.Grammar, name string, m gtypes.GomegaMatcher) M {
-	return wrap(gomega.WithTransform(func(e *traceassert.Event) any {
-		caps, ok := g.Match(get(e))
-		if !ok {
-			return nil
-		}
-		v, ok := caps.Str(name)
-		if !ok {
-			return nil
-		}
-		if n, err := strconv.Atoi(v); err == nil {
-			return n
-		}
-		return v
-	}, m))
+	return eventDetail(fmt.Sprintf("match grammar %q with capture %q satisfying the inner matcher", g, name),
+		func(e *traceassert.Event) (bool, string) {
+			s := get(e)
+			caps, ok := g.Match(s)
+			if !ok {
+				return false, fmt.Sprintf("%q does not match grammar %q", s, g)
+			}
+			v, ok := caps.Str(name)
+			if !ok {
+				return false, fmt.Sprintf("grammar %q has no capture %q", g, name)
+			}
+			// Numeric captures compare as ints (so Equal(0) works); others as strings.
+			// A real value is always applied to the inner matcher - never a nil, which
+			// some Gomega matchers (BeTrue/BeFalse) panic on rather than failing.
+			n, err := strconv.Atoi(v)
+			if err == nil {
+				return applyTyped(m, n)
+			}
+			return applyTyped(m, v)
+		})
 }
 
 // --- sid / queue ---------------------------------------------------------------
@@ -165,12 +184,18 @@ func PayloadIsEmpty() M {
 // PayloadJSON applies an inner matcher to a gjson path of the payload. JSON numbers
 // arrive as float64, so use BeNumerically("==", n) for numeric comparisons. This is
 // the fallback for payloads outside the jsm.go schema registry.
+//
+// A path that is absent from the payload fails cleanly ("payload has no JSON value at
+// path X") rather than feeding a nil to the inner matcher, which some Gomega matchers
+// (BeTrue/BeFalse) panic on rather than failing. A path that is present but explicitly
+// JSON null is still handed to the inner matcher as nil.
 func PayloadJSON(path string, m gtypes.GomegaMatcher) M {
-	return wrap(gomega.WithTransform(func(e *traceassert.Event) any {
-		r := gjson.GetBytes(e.Payload, path)
-		if !r.Exists() {
-			return nil
-		}
-		return r.Value()
-	}, m))
+	return eventDetail(fmt.Sprintf("have a JSON value at %q satisfying the inner matcher", path),
+		func(e *traceassert.Event) (bool, string) {
+			r := gjson.GetBytes(e.Payload, path)
+			if !r.Exists() {
+				return false, fmt.Sprintf("payload has no JSON value at path %q", path)
+			}
+			return applyTyped(m, r.Value())
+		})
 }
