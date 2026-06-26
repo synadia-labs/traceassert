@@ -3,6 +3,7 @@ package match
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/nats-io/jsm.go/api"
@@ -177,4 +178,68 @@ func applyTyped(inner gtypes.GomegaMatcher, v any) (bool, string) {
 		return false, inner.FailureMessage(v)
 	}
 	return true, ""
+}
+
+// HaveAPILevel asserts that a JetStream stream- or consumer- create or info response
+// reports a hosted API level - the "_nats.level" config metadata the server injects, i.e.
+// the level the asset is actually hosted at - satisfying the inner matcher. Use it to
+// assert an asset is hosted at or above a required level:
+//
+//	Expect(reply).To(HaveAPILevel(BeNumerically(">=", 4)))
+//
+// It applies to stream_create_response / consumer_create_response and their info
+// counterparts; any other event (including an unsuccessful response with no info) fails
+// the assertion.
+func HaveAPILevel(m gtypes.GomegaMatcher) M {
+	return eventDetail("be a stream/consumer response at the expected API level", func(e *traceassert.Event) (bool, string) {
+		v, _, err := decodeJS(e)
+		if err != nil {
+			return false, err.Error()
+		}
+		meta, ok := assetConfigMetadata(v)
+		if !ok {
+			return false, fmt.Sprintf("event is not a stream/consumer create or info response (decoded as %T)", v)
+		}
+		raw, ok := meta[api.JSMetaCurrentServerLevel]
+		if !ok {
+			return false, fmt.Sprintf("response has no %q config metadata", api.JSMetaCurrentServerLevel)
+		}
+		level, err := strconv.Atoi(raw)
+		if err != nil {
+			return false, fmt.Sprintf("%q config metadata %q is not an integer", api.JSMetaCurrentServerLevel, raw)
+		}
+		return applyTyped(m, level)
+	})
+}
+
+// assetConfigMetadata returns the asset config metadata of a stream- or consumer- create
+// or info response, reporting ok=false for any other message (or a response whose
+// embedded info is absent, e.g. an unsuccessful create).
+func assetConfigMetadata(v any) (map[string]string, bool) {
+	switch r := v.(type) {
+	case *api.JSApiStreamCreateResponse:
+		return streamMetadata(r.StreamInfo)
+	case *api.JSApiStreamInfoResponse:
+		return streamMetadata(r.StreamInfo)
+	case *api.JSApiConsumerCreateResponse:
+		return consumerMetadata(r.ConsumerInfo)
+	case *api.JSApiConsumerInfoResponse:
+		return consumerMetadata(r.ConsumerInfo)
+	default:
+		return nil, false
+	}
+}
+
+func streamMetadata(si *api.StreamInfo) (map[string]string, bool) {
+	if si == nil {
+		return nil, false
+	}
+	return si.Config.Metadata, true
+}
+
+func consumerMetadata(ci *api.ConsumerInfo) (map[string]string, bool) {
+	if ci == nil {
+		return nil, false
+	}
+	return ci.Config.Metadata, true
 }

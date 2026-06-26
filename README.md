@@ -64,19 +64,7 @@ line, then one line per frame (every `PUB`/`HPUB`/`SUB`/`UNSUB`/`MSG`/`HMSG`, pl
 `CONNECT`, `INFO`, `-ERR`, `PING` and `PONG`), then a footer line. Loading needs nothing
 but the standard library; there is no protocol parser in this package.
 
-You produce an expanded trace from a captured NATS connection with the companion
-`traceassert` CLI (distributed as a binary):
-
-```bash
-# stand up a policy-free capturing proxy in front of a NATS server
-traceassert proxy --listen 0.0.0.0:4223 --to 127.0.0.1:4222 --capture ./captures
-
-# convert a captured trace to the expanded format
-traceassert convert ./captures/client_abc.trace      # -> client_abc.expanded.json
-
-# inspect a capture (either format), with filters
-traceassert view ./captures/client_abc.expanded.json --verb PUB --subject 'orders.>'
-```
+Traces can be made using the [NATS Testing Framework](https://hub.docker.com/r/synadia/ntf-server) tool.
 
 Because it is line-oriented, the format **streams on both ends**: producing or reading a
 trace never holds more than a single frame in memory, so captures of any size are handled.
@@ -84,6 +72,24 @@ trace never holds more than a single frame in memory, so captures of any size ar
 repeatedly); to consume an arbitrarily large trace one frame at a time instead, use
 `ScanExpanded`. It is plain JSON, one object per line, so fixtures stay easy to commit,
 diff, and review.
+
+### Loading a capture
+
+Suites rarely call `LoadExpanded` directly. These helpers resolve a fixture by name and
+fail loudly on a missing, unreadable, or **truncated** capture, so a green run always means
+real evidence was asserted:
+
+| Helper                                          | Use                                                                                                |
+|-------------------------------------------------|----------------------------------------------------------------------------------------------------|
+| `match.MustLoadCapture(file)`                   | Ginkgo one-liner: loads `file`, or fails the spec (a clean failure, never a panic). Returns `*Trace` |
+| `traceassert.LoadCapture(file)`                 | the same, returning `(*Trace, error)` — for plain `go test` with a local Gomega                     |
+| `traceassert.CapturePath(file)`                 | just the path resolution, no load                                                                   |
+| `traceassert.TraceDirEnv` (`"TRACE_DIR"`)       | the env var the [`ta`](cmd/ta) runner sets to the capture directory                                 |
+
+The path is resolved as `$TRACE_DIR/<file>` (the directory `ta` exports to the suite) when
+`TRACE_DIR` is set, otherwise `testdata/<file>` for a plain `go test`. Once `TRACE_DIR` is
+set the `testdata/` fallback is deliberately not used, so a run against a supplied directory
+can never silently assert a committed fixture instead.
 
 ## Quick start
 
@@ -115,9 +121,9 @@ var _ = Describe("fast ingest", func() {
     var trace *traceassert.Trace
 
     BeforeEach(func() {
-        var err error
-        trace, err = traceassert.LoadExpanded("testdata/capture.expanded.json")
-        Expect(err).NotTo(HaveOccurred())
+        // MustLoadCapture resolves the path from $TRACE_DIR (set by the `ta` runner) or
+        // testdata/, loads it, and fails the spec if it is missing, unreadable, or truncated.
+        trace = MustLoadCapture("capture.expanded.json")
     })
 
     It("subscribes a dedicated inbox before publishing", func() {
@@ -133,12 +139,13 @@ var _ = Describe("fast ingest", func() {
 })
 ```
 
-Prefer plain `go test`? Every matcher is a Gomega matcher:
+Prefer plain `go test`? Every matcher is a Gomega matcher. Use `traceassert.LoadCapture`
+(the error-returning loader behind `MustLoadCapture`) with a local Gomega:
 
 ```go
 func TestHandshake(t *testing.T) {
     g := NewWithT(t)
-    tr, err := traceassert.LoadExpanded("testdata/capture.expanded.json")
+    tr, err := traceassert.LoadCapture("capture.expanded.json")
     g.Expect(err).NotTo(HaveOccurred())
 
     g.Expect(tr).To(ContainInOrder(BeConnect(), BeSub(), BePub()))
@@ -250,12 +257,14 @@ typed Go structs.
 | `BeJetStreamType(schemaType)`          | the derived/detected schema type equals `schemaType`                                                 |
 | `DecodeJetStream(inner)`               | decodes to the typed struct (auto-detected) and `inner` matches it                                   |
 | `DecodeJetStreamAs(schemaType, inner)` | decodes as the named type (for payloads with no `type` field, e.g. a pub ack) and `inner` matches it |
+| `HaveAPILevel(m)`                      | a stream/consumer create or info response reports a hosted API level (`_nats.level`) satisfying `m`  |
 
 ```go
 Expect(req).To(BeValidJetStreamRequest())
 Expect(req).To(DecodeJetStream(HaveField("Name", Equal("ORDERS"))))
 Expect(ack).To(DecodeJetStreamAs("io.nats.jetstream.api.v1.pub_ack_response",
     HaveField("BatchSize", Equal(5))))
+Expect(reply).To(HaveAPILevel(BeNumerically(">=", 4))) // stream/consumer hosted at level >= 4
 ```
 
 ### Selection & quantifiers

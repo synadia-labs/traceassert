@@ -99,11 +99,20 @@ save it as `testdata/single.expanded.json`.
 go test -v ./...
 ```
 
-Each spec loads its capture from `testdata/` (override with `ADR50_CAPTURE` /
-`ADR50_CAPTURE_SINGLE`). **A missing, unreadable, or truncated capture is a hard
-failure**, not a skip — a green run always means real evidence was asserted, never
-that the capture was quietly absent. The failure message tells you how to produce
-the capture.
+Each spec loads its capture with `MustLoadCapture` (from the `match` package), which
+resolves the path from `$TRACE_DIR/<file>` (the directory the [`ta`](../../cmd/ta) runner
+exports to the suite) or `testdata/<file>` for a plain `go test`. When `TRACE_DIR` is set
+the `testdata/` fallback is intentionally not used, so a green run always means the
+supplied capture was asserted, never a committed one. **A missing, unreadable, or
+truncated capture is a hard failure**, not a skip — the failure message tells you how to
+produce the capture.
+
+To run the suite through the [`ta`](../../cmd/ta) runner against a directory of traces
+(from the repository root, so `ta`'s own module provides its dependencies):
+
+```bash
+go run ./cmd/ta run --suite examples/adr-50 --traces examples/adr-50/testdata
+```
 
 The one remaining *skip* is **FB-101**, and only when the capture was taken against
 a pre-existing stream (`create:false`) so there is no stream-create to inspect.
