@@ -1,0 +1,9 @@
+{
+  "server": "nats://127.0.0.1:4223",
+  "name": "info-requests",
+  "stream": "ORDERS",
+  "consumer": "worker",
+  "interval": "1s",
+  "count": 12,
+  "burst": 5
+}
