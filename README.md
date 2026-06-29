@@ -37,6 +37,7 @@ Expect(trace).To(HaveFinalReply(
   - [Sequences & field extractors](#sequences--field-extractors)
   - [Request/reply & ordering](#requestreply--ordering)
   - [Inbox style](#inbox-style)
+  - [Rate limiting](#rate-limiting)
   - [Combinators](#combinators)
 - [Subject grammars](#subject-grammars)
 - [Correlation](#correlation)
@@ -327,6 +328,50 @@ against real `nats.go` behavior. `prefix` defaults to `_INBOX` when empty.
 |----------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `UseOldStyleInbox(prefix)` | the client subscribed a dedicated `<prefix>.<nuid>` (or `…<nuid>.>`) inbox before publishing under it (`<nuid>` = a real 22-char nats-io/nuid)                  |
 | `UseNewStyleInbox(prefix)` | the client used a shared mux subscription `<prefix>.<nuid>.*` with per-request replies `<prefix>.<nuid>.<suffix>` (`<suffix>` = an 8-char nats.go reply suffix) |
+
+### Rate limiting
+
+Assert that a class of repeating events stayed within a
+[token bucket](https://en.wikipedia.org/wiki/Token_bucket) — a short burst, then a
+sustained rate — with each grouping key tracked as an independent budget. The rate is
+computed from the **timestamps the trace recorded** (never wall-clock time), so the check
+is deterministic and fully offline: the same capture always gives the same result.
+
+| Matcher / function                            | Asserts / returns                                                                                       |
+|-----------------------------------------------|---------------------------------------------------------------------------------------------------------|
+| `RespectRateLimit(sel, by, limit)`            | (matcher) every event `sel` selects, grouped into independent buckets by `by`, stays within `limit`     |
+| `traceassert.CheckRate(events, RateCheck{…})` | (core) the same analysis as a `RateReport` — the violations plus match counts — for precise assertions |
+
+`limit` is a `traceassert.RateLimit{Burst, Every}`: up to `Burst` events back-to-back (the
+bucket starts full), then one more every `Every`. `sel` is a `Predicate` (nil = all
+events); `by` is a `KeyFunc` (nil = a single global bucket) — reuse the prebuilt keyers
+from [Correlation](#correlation) (`ByReply`, `BySubjectToken`, `ByCapture`, …).
+
+It is a **ceiling** check, not an average — set the limit above the client's intended rate
+with headroom, or ordinary timestamp jitter will trip it. And it **fails closed**: if
+nothing matches `sel`, or a selected event cannot be keyed by `by`, the assertion errors
+rather than passing vacuously (so it fails under both `To` and `NotTo`).
+
+```go
+// No stream or consumer's INFO is polled faster than 5 back-to-back, then 1/sec.
+Expect(trace).To(RespectRateLimit(isInfoRequest, infoAsset,
+    traceassert.RateLimit{Burst: 5, Every: time.Second}))
+
+// A nil grouping bounds aggregate load instead; with NotTo, assert some bucket DID exceed.
+Expect(trace).NotTo(RespectRateLimit(isInfoRequest, nil,
+    traceassert.RateLimit{Burst: 5, Every: time.Second}))
+
+// CheckRate exposes the violations as data for a precise assertion.
+report := traceassert.CheckRate(trace.Events, traceassert.RateCheck{
+    Select: isInfoRequest, By: infoAsset,
+    Limit:  traceassert.RateLimit{Burst: 5, Every: time.Second},
+})
+Expect(report.Violations[0].Key).To(Equal("stream/ORDERS"))
+```
+
+The [info_requests example](examples/info_requests) is a full walk-through, with common
+patterns (requests per inbox, publishes per subject, all JS API calls combined, …) and
+gotchas.
 
 ### Combinators
 
