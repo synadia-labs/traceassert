@@ -32,7 +32,8 @@ func registerRun(app *fisk.Application) {
 
 	run := app.Command("run", "Run a trace-conformance test suite against a directory of traces").Action(c.action)
 	run.HelpLong(`Compiles and runs the Go test suite in --suite using "go test", once per test
-package, and writes a JSON report of the result.
+package, and writes a JSON report of the result in the Common Test Report Format
+(CTRF, https://ctrf.io).
 
 The suite locates its fixtures through the TRACE_DIR environment variable, which ta
 sets to the absolute --traces path; suites should read os.Getenv("TRACE_DIR").
@@ -45,7 +46,7 @@ suite could not be run (build failure, not a Ginkgo suite, zero specs, bad argum
 
 	run.Flag("suite", "Directory holding the test suite").Short('s').Required().PlaceHolder("DIR").ExistingDirVar(&c.suite)
 	run.Flag("traces", "Directory of traces, exported to the suite as TRACE_DIR").Short('t').Required().PlaceHolder("DIR").ExistingDirVar(&c.traces)
-	run.Flag("report", "Write the JSON report to this file (- for stdout)").Short('r').PlaceHolder("FILE").StringVar(&c.report)
+	run.Flag("report", "Write the CTRF JSON report to this file (- for stdout)").Short('r').PlaceHolder("FILE").StringVar(&c.report)
 	run.Flag("description", "Human-readable description recorded in the report").Short('d').PlaceHolder("TEXT").StringVar(&c.description)
 	run.Flag("focus", "Only run specs whose text matches this regular expression").PlaceHolder("REGEXP").StringVar(&c.focus)
 	run.Flag("timeout", "Per-package go test timeout").Default("10m").DurationVar(&c.timeout)
@@ -133,7 +134,7 @@ func (c *runCmd) execute() int {
 	}
 
 	rep.FinishedAt = time.Now()
-	rep.DurationSeconds = rep.FinishedAt.Sub(rep.StartedAt).Seconds()
+	rep.Duration = rep.FinishedAt.Sub(rep.StartedAt)
 
 	empty := rep.Totals.Specs == 0 && !c.allowEmpty
 	rep.Success = !tooling && !empty && allSucceeded
@@ -202,7 +203,7 @@ func (c *runCmd) buildSuiteResult(run ginkgoRun) (SuiteResult, Totals, string, b
 		if sr.Path == "" {
 			sr.Path = r.SuitePath
 		}
-		sr.DurationSeconds += r.RunTime.Seconds()
+		sr.Duration += r.RunTime
 		sr.Tests = append(sr.Tests, c.specResults(r)...)
 		tallySpecs(r, &totals)
 	}
@@ -269,14 +270,14 @@ func (c *runCmd) specResults(r ginkgoReport) []TestResult {
 		}
 
 		t := TestResult{
-			Name:            s.fullText(),
-			State:           s.State,
-			DurationSeconds: s.RunTime.Seconds(),
-			File:            s.LeafNodeLocation.FileName,
-			Line:            s.LeafNodeLocation.LineNumber,
-			Labels:          s.labels(),
-			containers:      s.ContainerHierarchyTexts,
-			leaf:            s.LeafNodeText,
+			Name:       s.fullText(),
+			State:      s.State,
+			Duration:   s.RunTime,
+			File:       s.LeafNodeLocation.FileName,
+			Line:       s.LeafNodeLocation.LineNumber,
+			Labels:     s.labels(),
+			containers: s.ContainerHierarchyTexts,
+			leaf:       s.LeafNodeText,
 		}
 		// A setup node (BeforeSuite, ...) has no leaf text; label it by its node type
 		// so it still renders as a single top-level row.

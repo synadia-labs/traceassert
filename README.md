@@ -42,6 +42,7 @@ Expect(trace).To(HaveFinalReply(
   - [Combinators](#combinators)
 - [Subject grammars](#subject-grammars)
 - [Correlation](#correlation)
+- [The ta runner](#the-ta-runner)
 - [More examples](#more-examples)
 
 ## Install
@@ -579,6 +580,32 @@ A `Conversation` exposes `Key`, `Events`, and `ToServer()` / `FromServer()` slic
 that matches `isReq` and carries a reply, it finds the first later `FromServer` event
 delivered to that reply subject, and returns `[]ReqResp{ Request, Response }` with
 `Response` nil when unanswered. It uses no inbox heuristics.
+
+## The ta runner
+
+`ta run` compiles and runs the Ginkgo suite in `--suite` with `go test`, one package at a
+time, exports `--traces` to it as `TRACE_DIR`, prints a summary and exits 0 on a pass, 1 on
+a failing spec and 2 when the suite could not run. `--report FILE` (or `--report=-` for
+stdout, which then carries the JSON and no summary) writes the run as a
+[CTRF](https://ctrf.io) document: one entry per spec under
+`results.tests`, with `tags` carrying the Ginkgo labels, `rawStatus` the Ginkgo state before
+it is mapped to the CTRF `status`, and `extra.skip_reason` the `Skip` message. The run's own
+fields (`suite_dir`, `traces_dir`, `success`, and one `packages` entry per test package with
+its `error` when it could not run) sit under `results.extra`.
+
+```json
+{
+  "name": "ingest needs fast ingest",
+  "status": "skipped",
+  "duration": 0,
+  "suite": ["ingest"],
+  "filePath": "/suites/adr-50/ingest_test.go",
+  "line": 15,
+  "tags": ["ADR50", "ADR50-C-301"],
+  "rawStatus": "skipped",
+  "extra": { "skip_reason": "capability-absent: no fast ingest" }
+}
+```
 
 ## More examples
 
