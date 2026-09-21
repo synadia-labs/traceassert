@@ -76,6 +76,68 @@ func TestRequestReplies_Correlation(t *testing.T) {
 	}
 }
 
+func TestRequestReplies_Dropped(t *testing.T) {
+	full := loadExpanded(t, shapedConnection())
+	views := map[string]*Trace{
+		"full trace":  full,
+		"client view": full.ClientView(),
+		"server view": full.ServerView(),
+	}
+
+	pairFor := func(t *testing.T, pairs []ReqResp, reply string) (ReqResp, bool) {
+		t.Helper()
+		for _, p := range pairs {
+			if p.Request.Reply == reply {
+				return p, true
+			}
+		}
+		return ReqResp{}, false
+	}
+
+	t.Run("a dropped request is skipped", func(t *testing.T) {
+		for name, tr := range views {
+			pairs := tr.RequestReplies(isRequest)
+			if len(pairs) != 2 {
+				t.Errorf("%s: got %d pairs, want 2 (the dropped request is not owed a reply)", name, len(pairs))
+			}
+			if _, ok := pairFor(t, pairs, "_INBOX.s.r2"); ok {
+				t.Errorf("%s: the dropped request was paired", name)
+			}
+		}
+	})
+
+	t.Run("a dropped reply pairs over the full trace and the server view", func(t *testing.T) {
+		for _, name := range []string{"full trace", "server view"} {
+			p, ok := pairFor(t, views[name].RequestReplies(isRequest), "_INBOX.s.r1")
+			if !ok {
+				t.Fatalf("%s: the request whose reply was dropped is missing", name)
+			}
+			if p.Response == nil || !p.Response.Dropped() || p.Response.Line != droppedReplyLine {
+				t.Errorf("%s: response = %v, want the dropped reply at line %d", name, p.Response, droppedReplyLine)
+			}
+		}
+	})
+
+	t.Run("a dropped reply leaves the request unanswered in the client view", func(t *testing.T) {
+		p, ok := pairFor(t, views["client view"].RequestReplies(isRequest), "_INBOX.s.r1")
+		if !ok {
+			t.Fatal("the request whose reply was dropped is missing from the client view")
+		}
+		if p.Response != nil {
+			t.Errorf("response = %v, want none: the client never received it", p.Response)
+		}
+	})
+
+	t.Run("a stalled request still pairs", func(t *testing.T) {
+		for name, tr := range views {
+			p, ok := pairFor(t, tr.RequestReplies(isRequest), "_INBOX.s.r3")
+			if !ok || p.Response == nil || string(p.Response.Payload) != "reply" {
+				t.Errorf("%s: stalled request pair = %+v, want its reply", name, p)
+			}
+		}
+	})
+}
+
 func TestKeyFuncs_HeaderAndToken(t *testing.T) {
 	b := tracegen.New("client")
 	b.Info(`{}`).Connect("{}")

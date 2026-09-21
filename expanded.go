@@ -52,6 +52,15 @@ type expandedEvent struct {
 	Header  map[string][]string `json:"header,omitempty"`
 	Payload []byte              `json:"payload,omitempty"`
 	Bytes   int                 `json:"bytes,omitempty"`
+	Shaped  *expandedShaped     `json:"shaped,omitempty"`
+}
+
+// expandedShaped mirrors Shaped for serialization. The key is absent on every event
+// the proxy left alone, and absent throughout a capture written before the key
+// existed; either way the event loads with a nil Shaped.
+type expandedShaped struct {
+	Rule   string `json:"rule"`
+	Action string `json:"action"`
 }
 
 // expandedFooterLine is the last line, written only when the trace completed (had a
@@ -62,6 +71,10 @@ type expandedFooterLine struct {
 }
 
 func toExpandedEvent(e *Event) expandedEvent {
+	var shaped *expandedShaped
+	if e.Shaped != nil {
+		shaped = &expandedShaped{Rule: e.Shaped.Rule, Action: e.Shaped.Action}
+	}
 	return expandedEvent{
 		Line:    e.Line,
 		At:      e.At,
@@ -75,6 +88,7 @@ func toExpandedEvent(e *Event) expandedEvent {
 		Header:  e.Header,
 		Payload: e.Payload,
 		Bytes:   e.WireBytes,
+		Shaped:  shaped,
 	}
 }
 
@@ -82,6 +96,10 @@ func (ee *expandedEvent) toEvent() *Event {
 	dir := ToServer
 	if ee.Dir == FromServer.String() {
 		dir = FromServer
+	}
+	var shaped *Shaped
+	if ee.Shaped != nil {
+		shaped = &Shaped{Rule: ee.Shaped.Rule, Action: ee.Shaped.Action}
 	}
 	return &Event{
 		Line:      ee.Line,
@@ -96,6 +114,7 @@ func (ee *expandedEvent) toEvent() *Event {
 		Header:    ee.Header,
 		Payload:   ee.Payload,
 		WireBytes: ee.Bytes,
+		Shaped:    shaped,
 	}
 }
 

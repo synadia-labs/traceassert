@@ -135,10 +135,14 @@ type ReqResp struct {
 // matches isReq and carries a reply subject, it finds the first later FromServer
 // event delivered to that reply subject. This is exact correlation — the request's
 // reply subject is the response's delivery subject — and needs no inbox heuristics.
+//
+// A request the proxy dropped (Event.Dropped) is skipped: the server never saw it, so
+// no reply is owed. A dropped reply still pairs here, where Delivered can be asserted
+// on it; read through ClientView it is absent and the request is unanswered.
 func (t *Trace) RequestReplies(isReq Predicate) []ReqResp {
 	var out []ReqResp
 	for i, e := range t.Events {
-		if e.Dir != ToServer || e.Reply == "" || !isReq(e) {
+		if e.Dir != ToServer || e.Reply == "" || e.Dropped() || !isReq(e) {
 			continue
 		}
 		rr := ReqResp{Request: e}

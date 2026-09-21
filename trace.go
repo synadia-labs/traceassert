@@ -51,7 +51,26 @@ type Event struct {
 	// expanded document written before this field existed).
 	WireBytes int
 
+	// Shaped is set when a traffic-shaping proxy acted on the frame, and nil on every
+	// frame the proxy left alone.
+	Shaped *Shaped
+
+	// Conn is the index of the event's trace within its Session: 0 for the first
+	// connection the client made, 1 for the next, and so on. It is set when a Session
+	// is assembled and is 0 on every event of a trace loaded on its own. It is not part
+	// of the expanded format.
+	Conn int
+
 	tokens []string // lazy: Subject split on '.'
+}
+
+// Shaped records that a traffic-shaping proxy acted on a frame. Rule is the id of the
+// shaping rule that fired (e.g. "drop-ack-30"). Action is the string the proxy wrote
+// for what it did to the frame, such as "drop", "stall", "throttle" or "disconnect";
+// it is not a constant this package defines.
+type Shaped struct {
+	Rule   string
+	Action string
 }
 
 // Tokens returns the subject split on '.', computed once.
@@ -74,6 +93,17 @@ func (e *Event) HeaderGet(key string) (string, bool) {
 
 // IsRequest reports whether the event carries a reply subject (a request).
 func (e *Event) IsRequest() bool { return e.Reply != "" }
+
+// Dropped reports whether the proxy never forwarded the frame: Shaped is set and its
+// Action is "drop" or "disconnect". A stalled or throttled frame was delivered late
+// and is not dropped. This is the one definition the match predicates and the views
+// share.
+func (e *Event) Dropped() bool {
+	if e.Shaped == nil {
+		return false
+	}
+	return e.Shaped.Action == "drop" || e.Shaped.Action == "disconnect"
+}
 
 func (e *Event) String() string {
 	return fmt.Sprintf("line %d %s %s %q", e.Line, e.Dir, e.Verb, e.Subject)
@@ -154,4 +184,29 @@ func (t *Trace) Count(p Predicate) int {
 		}
 	}
 	return n
+}
+
+// ClientView returns the trace as the client saw it: the same Header, Footer and
+// Path, and every event except a dropped FromServer frame, which the proxy never
+// forwarded to the client. The events are shared, not copied, so Line, ID and Conn
+// are those of the full capture and a failure still names the frame in the file.
+// Every matcher runs over a view unchanged; a lost ack read through the client view
+// is a request with no response.
+func (t *Trace) ClientView() *Trace { return t.view(FromServer) }
+
+// ServerView returns the trace as the server saw it: every event except a dropped
+// ToServer frame, which the proxy never forwarded to the server. See ClientView.
+func (t *Trace) ServerView() *Trace { return t.view(ToServer) }
+
+// view returns a trace without the dropped frames traveling in dir.
+func (t *Trace) view(dir Direction) *Trace {
+	out := &Trace{Header: t.Header, Footer: t.Footer, Path: t.Path}
+	out.Events = make([]*Event, 0, len(t.Events))
+	for _, e := range t.Events {
+		if e.Dir == dir && e.Dropped() {
+			continue
+		}
+		out.Events = append(out.Events, e)
+	}
+	return out
 }

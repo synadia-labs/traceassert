@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/synadia-labs/traceassert/tracegen"
 )
@@ -108,6 +109,109 @@ func TestExpanded_PreservesHeadersAndWireBytes(t *testing.T) {
 	}
 	if reloaded.WireBytes != hpub.WireBytes {
 		t.Errorf("round-tripped WireBytes = %d, want %d", reloaded.WireBytes, hpub.WireBytes)
+	}
+}
+
+// TestExpanded_RoundTripShaped checks that a shaped event survives the initial expanded
+// render, a WriteExpanded round trip and the streaming scanner, and that the events the
+// proxy left alone stay nil.
+func TestExpanded_RoundTripShaped(t *testing.T) {
+	want := &Shaped{Rule: "drop-ack-30", Action: "drop"}
+
+	b := tracegen.New("client")
+	b.Info(`{"server_id":"test"}`)
+	b.Connect("{}")
+	b.Sub("_INBOX.batch1.>", "1")
+	b.Pub("ORDERS", "_INBOX.batch1.10.ok.1.0.$FI", []byte("m1"))
+	b.MsgString("_INBOX.batch1.ack", "1", `{"type":"ack","seq":1,"msgs":15}`).Shaped(want.Rule, want.Action)
+
+	first := loadExpanded(t, b)
+	checkShaped := func(stage string, tr *Trace) {
+		t.Helper()
+		for _, e := range tr.Events {
+			if e.Verb == "MSG" {
+				if !reflect.DeepEqual(e.Shaped, want) {
+					t.Errorf("%s: %s Shaped = %+v, want %+v", stage, e, e.Shaped, want)
+				}
+				continue
+			}
+			if e.Shaped != nil {
+				t.Errorf("%s: %s Shaped = %+v, want nil", stage, e, e.Shaped)
+			}
+		}
+	}
+	checkShaped("render", first)
+
+	path := filepath.Join(t.TempDir(), "shaped.expanded.json")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteExpanded(f, first); err != nil {
+		t.Fatalf("WriteExpanded: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := LoadExpanded(path)
+	if err != nil {
+		t.Fatalf("LoadExpanded: %v", err)
+	}
+	checkShaped("writer", second)
+
+	s, err := ScanExpanded(path)
+	if err != nil {
+		t.Fatalf("ScanExpanded: %v", err)
+	}
+	defer s.Close()
+	streamed := &Trace{}
+	for e, err := range s.Events() {
+		if err != nil {
+			t.Fatalf("stream: %v", err)
+		}
+		streamed.Events = append(streamed.Events, e)
+	}
+	if len(streamed.Events) != len(first.Events) {
+		t.Fatalf("streamed %d events, want %d", len(streamed.Events), len(first.Events))
+	}
+	checkShaped("scanner", streamed)
+}
+
+// TestLoadExpanded_WithoutShapedKey checks that a v2 document written before the
+// "shaped" key existed loads with a nil Shaped on every event.
+func TestLoadExpanded_WithoutShapedKey(t *testing.T) {
+	doc := `{"format":"traceassert-expanded","version":2,"header":{"version":1,"device":"test","protocol":"client"}}
+{"line":2,"at":"2026-01-01T00:00:00Z","dir":"from_server","verb":"INFO","payload":"e30="}
+{"line":3,"at":"2026-01-01T00:00:00Z","dir":"to_server","verb":"PUB","subject":"ORDERS","payload":"bTE=","bytes":16}
+{"footer":{"ts":"2026-01-01T00:00:01Z","duration":1000000000}}
+`
+	path := filepath.Join(t.TempDir(), "unshaped.expanded.json")
+	if err := os.WriteFile(path, []byte(doc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tr, err := LoadExpanded(path)
+	if err != nil {
+		t.Fatalf("LoadExpanded: %v", err)
+	}
+	if len(tr.Events) != 2 {
+		t.Fatalf("loaded %d events, want 2", len(tr.Events))
+	}
+	for _, e := range tr.Events {
+		if e.Shaped != nil {
+			t.Errorf("%s Shaped = %+v, want nil", e, e.Shaped)
+		}
+	}
+}
+
+// TestExpanded_HeaderTimestamp checks that tracegen's Timestamp reaches the loaded
+// trace header.
+func TestExpanded_HeaderTimestamp(t *testing.T) {
+	ts := time.Date(2026, 6, 26, 12, 0, 0, 0, time.UTC)
+	tr := loadExpanded(t, fastIngestBuilder().Timestamp(ts))
+	if !tr.Header.Timestamp.Equal(ts) {
+		t.Errorf("header timestamp = %s, want %s", tr.Header.Timestamp, ts)
 	}
 }
 

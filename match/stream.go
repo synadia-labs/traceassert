@@ -120,30 +120,44 @@ type reqRespMatcher struct {
 	detail      string
 }
 
-// RequestReply correlates request/reply exchanges over a *Trace: every event
-// matching reqM (that carries a reply) must have a server response delivered to that
-// reply subject satisfying respM.
+// RequestReply correlates request/reply exchanges over a *Trace or a *Session: every
+// event matching reqM (that carries a reply) must have a server response delivered to
+// that reply subject satisfying respM. Over a session the pairing is the session's
+// own, per connection, so a reply on a later connection does not answer a request
+// made on an earlier one.
 func RequestReply(reqM, respM gtypes.GomegaMatcher) M {
 	return wrap(&reqRespMatcher{reqM: reqM, respM: respM})
 }
 
 func (m *reqRespMatcher) Match(actual any) (bool, error) {
-	tr, ok := actual.(*traceassert.Trace)
-	if !ok {
-		return false, fmt.Errorf("RequestReply expects a *traceassert.Trace, got %T", actual)
+	isReq := func(e *traceassert.Event) bool { return runMatch(m.reqM, e) }
+
+	var pairs []traceassert.ReqResp
+	// Line numbers restart in every capture of a session, so a detail over one names
+	// the connection as well.
+	where := func(e *traceassert.Event) string { return fmt.Sprintf("line %d", e.Line) }
+	switch v := actual.(type) {
+	case *traceassert.Trace:
+		pairs = v.RequestReplies(isReq)
+	case *traceassert.Session:
+		pairs = v.RequestReplies(isReq)
+		where = func(e *traceassert.Event) string {
+			return fmt.Sprintf("connection %d line %d", e.Conn, e.Line)
+		}
+	default:
+		return false, fmt.Errorf("RequestReply expects a *traceassert.Trace or *traceassert.Session, got %T", actual)
 	}
-	pairs := tr.RequestReplies(func(e *traceassert.Event) bool { return runMatch(m.reqM, e) })
 	if len(pairs) == 0 {
 		m.detail = "no matching requests found"
 		return false, nil
 	}
 	for _, p := range pairs {
 		if p.Response == nil {
-			m.detail = fmt.Sprintf("request at line %d has no correlated response", p.Request.Line)
+			m.detail = fmt.Sprintf("request at %s has no correlated response", where(p.Request))
 			return false, nil
 		}
 		if !runMatch(m.respM, p.Response) {
-			m.detail = fmt.Sprintf("response at line %d did not match", p.Response.Line)
+			m.detail = fmt.Sprintf("response at %s did not match", where(p.Response))
 			return false, nil
 		}
 	}

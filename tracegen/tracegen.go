@@ -14,6 +14,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 )
 
 const (
@@ -40,11 +41,13 @@ type frame struct {
 	header  map[string][]string
 	payload []byte
 	raw     []byte
+	shaped  *expShaped // set by Shaped; only the expanded output carries it
 }
 
 // Builder accumulates frames for one connection.
 type Builder struct {
 	protocol string
+	headerTS time.Time // zero means frameTS
 	frames   []frame
 }
 
@@ -53,6 +56,34 @@ func New(protocol string) *Builder { return &Builder{protocol: protocol} }
 
 func (b *Builder) add(f frame) *Builder {
 	b.frames = append(b.frames, f)
+	return b
+}
+
+// Timestamp sets the trace header's timestamp, which otherwise is the same fixed
+// instant every frame carries. A loader that orders sessions by their header
+// timestamp needs distinct values across fixtures.
+func (b *Builder) Timestamp(ts time.Time) *Builder {
+	b.headerTS = ts
+	return b
+}
+
+// headerTimestamp renders the header timestamp for either output format.
+func (b *Builder) headerTimestamp() string {
+	if b.headerTS.IsZero() {
+		return frameTS
+	}
+	return b.headerTS.UTC().Format(time.RFC3339Nano)
+}
+
+// Shaped marks the most recently added frame as acted on by a traffic-shaping proxy:
+// rule is the shaping rule's id and action the string the proxy wrote ("drop",
+// "stall", "throttle", "disconnect"). Only the expanded output renders it, as the
+// "shaped" key on that event line. It panics when no frame has been added yet.
+func (b *Builder) Shaped(rule, action string) *Builder {
+	if len(b.frames) == 0 {
+		panic("tracegen: Shaped called before any frame was added")
+	}
+	b.frames[len(b.frames)-1].shaped = &expShaped{Rule: rule, Action: action}
 	return b
 }
 
@@ -183,7 +214,7 @@ func headerBlock(header map[string][]string) string {
 func (b *Builder) Bytes(footer bool) []byte {
 	lines := []string{fmt.Sprintf(
 		`{"version":1,"device":"tracegen","ts":"%s","cuuid":"test","port":"%s","protocol":"%s","profile":{"uuid":"test"},"file":"test"}`,
-		frameTS, b.protocol, b.protocol)}
+		b.headerTimestamp(), b.protocol, b.protocol)}
 	for _, f := range b.frames {
 		lines = append(lines, fmt.Sprintf(
 			`{"ts":"%s","dir":"%s","msg":"%s","dat":"%s"}`,
@@ -220,9 +251,10 @@ type expFooterLine struct {
 }
 
 type expHeader struct {
-	Version  int    `json:"version"`
-	Device   string `json:"device"`
-	Protocol string `json:"protocol"`
+	Version   int    `json:"version"`
+	Device    string `json:"device"`
+	Timestamp string `json:"ts"`
+	Protocol  string `json:"protocol"`
 }
 
 type expFooter struct {
@@ -241,6 +273,14 @@ type expEvent struct {
 	Header  map[string][]string `json:"header,omitempty"`
 	Payload []byte              `json:"payload,omitempty"`
 	Bytes   int                 `json:"bytes,omitempty"`
+	Shaped  *expShaped          `json:"shaped,omitempty"`
+}
+
+// expShaped is the "shaped" key of an event line: the proxy's shaping rule id and the
+// action string it wrote. It mirrors traceassert's on-disk shape.
+type expShaped struct {
+	Rule   string `json:"rule"`
+	Action string `json:"action"`
 }
 
 // ExpandedBytes renders the trace as a traceassert expanded document (JSON Lines: a
@@ -257,7 +297,7 @@ func (b *Builder) ExpandedBytes(footer bool) []byte {
 	_ = enc.Encode(expHeaderLine{
 		Format:  expandedFormat,
 		Version: expandedVersion,
-		Header:  expHeader{Version: 1, Device: "tracegen", Protocol: b.protocol},
+		Header:  expHeader{Version: 1, Device: "tracegen", Timestamp: b.headerTimestamp(), Protocol: b.protocol},
 	})
 	for i, f := range b.frames {
 		dir := "to_server"
@@ -275,6 +315,7 @@ func (b *Builder) ExpandedBytes(footer bool) []byte {
 			Header:  f.header,
 			Payload: f.payload,
 			Bytes:   len(f.raw),
+			Shaped:  f.shaped,
 		})
 	}
 	if footer {
