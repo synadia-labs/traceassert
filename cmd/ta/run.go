@@ -274,6 +274,7 @@ func (c *runCmd) specResults(r ginkgoReport) []TestResult {
 			DurationSeconds: s.RunTime.Seconds(),
 			File:            s.LeafNodeLocation.FileName,
 			Line:            s.LeafNodeLocation.LineNumber,
+			Labels:          s.labels(),
 			containers:      s.ContainerHierarchyTexts,
 			leaf:            s.LeafNodeText,
 		}
@@ -282,13 +283,16 @@ func (c *runCmd) specResults(r ginkgoReport) []TestResult {
 		if t.leaf == "" {
 			t.leaf = s.fullText()
 		}
-		// Ginkgo also stores a skip reason in Failure.Message, so only surface it as a
-		// failure for states that actually failed.
+		// Ginkgo stores a skip reason in Failure.Message too, so the message is a
+		// failure only for states that actually failed and a skip reason for a skip.
 		if isFailedState(s.State) {
 			t.Failure = s.Failure.Message
 			t.Output = clampOutput(s.combinedOutput())
 		} else if c.verbose {
 			t.Output = clampOutput(s.combinedOutput())
+		}
+		if s.State == "skipped" {
+			t.SkipReason = s.Failure.Message
 		}
 		out = append(out, t)
 	}

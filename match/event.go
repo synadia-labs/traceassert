@@ -69,6 +69,32 @@ func HaveReply(m gtypes.GomegaMatcher) M {
 	return wrap(gomega.WithTransform(func(e *traceassert.Event) string { return e.Reply }, m))
 }
 
+// --- shaping -------------------------------------------------------------------
+
+// Dropped matches a frame the traffic-shaping proxy never forwarded: Shaped is set
+// and its action is "drop" or "disconnect" (Event.Dropped). A stalled or throttled
+// frame is not dropped.
+func Dropped() M {
+	return eventPred("be dropped by the proxy", func(e *traceassert.Event) bool { return e.Dropped() })
+}
+
+// Delivered matches a frame the proxy forwarded: the negation of Dropped, so an
+// unshaped, stalled or throttled frame is delivered.
+func Delivered() M {
+	return eventPred("be delivered by the proxy", func(e *traceassert.Event) bool { return !e.Dropped() })
+}
+
+// ShapedBy matches a frame the shaping rule with id rule acted on, whatever the
+// action. A suite opens with Exactly(1, ShapedBy("drop-ack-30")) over the full trace
+// before asserting the client's reaction over a view: a rule that never fired is a
+// scenario error, and the dropped frame is absent from the client view, where the
+// guard would read zero.
+func ShapedBy(rule string) M {
+	return eventPred(fmt.Sprintf("be shaped by rule %q", rule), func(e *traceassert.Event) bool {
+		return e.Shaped != nil && e.Shaped.Rule == rule
+	})
+}
+
 // --- subject -------------------------------------------------------------------
 
 // HaveSubject matches an exact subject string.

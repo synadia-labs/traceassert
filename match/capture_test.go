@@ -35,6 +35,31 @@ func TestMustLoadCapture(t *testing.T) {
 	})
 }
 
+func TestMustLoadSession(t *testing.T) {
+	gomega.RegisterTestingT(t)
+
+	dir := t.TempDir()
+	writeCapture(t, filepath.Join(dir, "scn.expanded.json"))
+	writeCapture(t, filepath.Join(dir, "scn-1.expanded.json"))
+	t.Setenv(traceassert.TraceDirEnv, dir)
+
+	t.Run("loads every capture of a present session", func(t *testing.T) {
+		s := MustLoadSession("scn")
+		if len(s.Traces) != 2 {
+			t.Fatalf("got %d traces, want 2", len(s.Traces))
+		}
+	})
+
+	t.Run("fails cleanly (no panic) on a missing session", func(t *testing.T) {
+		failure := gomega.InterceptGomegaFailure(func() {
+			MustLoadSession("absent")
+		})
+		if failure == nil {
+			t.Fatal("expected MustLoadSession to register a Gomega failure for a missing session")
+		}
+	})
+}
+
 func writeCapture(t *testing.T, path string) {
 	t.Helper()
 	f, err := os.Create(path)

@@ -30,8 +30,13 @@ func CapturePath(file string) string {
 // partial success - so a green run always means real evidence was asserted, not that the
 // capture was quietly absent or cut short.
 func LoadCapture(file string) (*Trace, error) {
-	path := CapturePath(file)
+	return loadCompleteCapture(CapturePath(file))
+}
 
+// loadCompleteCapture loads the expanded capture at path and refuses a truncated one.
+// LoadCapture and LoadSession share it so a cut-short capture is reported the same way
+// whichever loader met it.
+func loadCompleteCapture(path string) (*Trace, error) {
 	tr, err := LoadExpanded(path)
 	if err != nil {
 		return nil, err

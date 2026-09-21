@@ -2,6 +2,7 @@ package match
 
 import (
 	"fmt"
+	"strconv"
 
 	"github.com/tidwall/gjson"
 
@@ -47,6 +48,50 @@ func PayloadField(path string) StrField {
 			return "", false
 		}
 		return r.String(), true
+	}
+}
+
+// PayloadInt extracts a gjson path from the payload as an int. The value may be a
+// JSON number or a numeric string; a fraction or anything else reports ok=false.
+func PayloadInt(path string) IntField {
+	return func(e *traceassert.Event) (int, bool) {
+		r := gjson.GetBytes(e.Payload, path)
+		if r.Type != gjson.Number && r.Type != gjson.String {
+			return 0, false
+		}
+		n, err := strconv.Atoi(r.String())
+		if err != nil {
+			return 0, false
+		}
+		return n, true
+	}
+}
+
+// HeaderField extracts the first value of a header, its name matched
+// case-insensitively, reporting ok=false when the header is absent. This is the
+// header counterpart of PayloadField, for a control plane carried in headers such
+// as the ADR-50 atomic batch's Nats-Batch-Id.
+func HeaderField(name string) StrField {
+	return func(e *traceassert.Event) (string, bool) {
+		return e.HeaderGet(name)
+	}
+}
+
+// HeaderInt is HeaderField for a header whose first value is an integer, such as
+// Nats-Batch-Sequence. A header that is absent or does not parse reports ok=false,
+// so BeContiguousFrom and BeMonotonic skip the event as they do for a subject that
+// carries no capture.
+func HeaderInt(name string) IntField {
+	return func(e *traceassert.Event) (int, bool) {
+		v, ok := e.HeaderGet(name)
+		if !ok {
+			return 0, false
+		}
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return 0, false
+		}
+		return n, true
 	}
 }
 

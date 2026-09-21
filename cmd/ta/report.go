@@ -64,8 +64,17 @@ type TestResult struct {
 	DurationSeconds float64 `json:"duration_seconds"`
 	File            string  `json:"file,omitempty"`
 	Line            int     `json:"line,omitempty"`
-	Failure         string  `json:"failure,omitempty"`
-	Output          string  `json:"output,omitempty"`
+	// Labels is every Ginkgo label on the spec: the container labels outermost first,
+	// then the leaf labels, deduplicated in first-seen order. All labels pass through;
+	// ta does not know which of them are rule ids, so consumers match the ids they
+	// know and ignore the rest.
+	Labels []string `json:"labels,omitempty"`
+	// SkipReason is the message of a Skip() call for a spec whose state is skipped,
+	// copied verbatim. Ginkgo's own skip messages (an Ordered container whose earlier
+	// spec failed, a Skip in BeforeAll) pass through the same way.
+	SkipReason string `json:"skip_reason,omitempty"`
+	Failure    string `json:"failure,omitempty"`
+	Output     string `json:"output,omitempty"`
 
 	// containers and leaf hold the spec's hierarchy split into its container
 	// (Describe/Context) texts and the leaf (It) text, used to render the indented

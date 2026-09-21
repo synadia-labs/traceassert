@@ -5,7 +5,7 @@
 // Matchers fall into three groups:
 //
 //   - event predicates  — assert about a single *traceassert.Event
-//   - selection/quantifiers — assert about a []*Event, *Trace, or *Conversation
+//   - selection/quantifiers — assert about a []*Event, *Trace, *Session, or *Conversation
 //   - payload validation — decode and validate JetStream payloads via jsm.go
 //
 // All event predicates return M, a thin wrapper that adds fluent And/Or/Not so
@@ -80,17 +80,21 @@ func (m *eventMatcher) NegatedFailureMessage(actual any) string {
 // --- slice/trace matcher plumbing ----------------------------------------------
 
 // toEvents normalizes the supported actual types into an event slice so the
-// selection/quantifier matchers accept a *Trace, []*Event, or *Conversation.
+// selection/quantifier matchers accept a *Trace, *Session, []*Event, or
+// *Conversation. A session's events are its traces' events concatenated in
+// connection order.
 func toEvents(actual any) ([]*traceassert.Event, error) {
 	switch v := actual.(type) {
 	case *traceassert.Trace:
 		return v.Events, nil
+	case *traceassert.Session:
+		return v.Events(), nil
 	case []*traceassert.Event:
 		return v, nil
 	case *traceassert.Conversation:
 		return v.Events, nil
 	default:
-		return nil, fmt.Errorf("expected *Trace, []*Event or *Conversation, got %T", actual)
+		return nil, fmt.Errorf("expected *Trace, *Session, []*Event or *Conversation, got %T", actual)
 	}
 }
 

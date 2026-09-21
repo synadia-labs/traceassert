@@ -38,8 +38,10 @@ type ginkgoPreRunStats struct {
 // appear here alongside the actual It specs; isSpec distinguishes them.
 type ginkgoSpecReport struct {
 	ContainerHierarchyTexts    []string           `json:"ContainerHierarchyTexts"`
+	ContainerHierarchyLabels   [][]string         `json:"ContainerHierarchyLabels"`
 	LeafNodeType               string             `json:"LeafNodeType"`
 	LeafNodeText               string             `json:"LeafNodeText"`
+	LeafNodeLabels             []string           `json:"LeafNodeLabels"`
 	LeafNodeLocation           ginkgoCodeLocation `json:"LeafNodeLocation"`
 	State                      string             `json:"State"`
 	RunTime                    time.Duration      `json:"RunTime"`
@@ -75,6 +77,30 @@ func (s *ginkgoSpecReport) fullText() string {
 // isSpec reports whether the node is an actual It spec, as opposed to a suite setup
 // node such as BeforeSuite.
 func (s *ginkgoSpecReport) isSpec() bool { return s.LeafNodeType == "It" }
+
+// labels flattens the spec's labels the way Ginkgo's own SpecReport.Labels does: the
+// container labels outermost first, then the leaf labels, deduplicated in first-seen
+// order. A spec with no labels yields nil.
+func (s *ginkgoSpecReport) labels() []string {
+	var out []string
+	seen := map[string]bool{}
+	add := func(label string) {
+		if seen[label] {
+			return
+		}
+		seen[label] = true
+		out = append(out, label)
+	}
+	for _, labels := range s.ContainerHierarchyLabels {
+		for _, label := range labels {
+			add(label)
+		}
+	}
+	for _, label := range s.LeafNodeLabels {
+		add(label)
+	}
+	return out
+}
 
 // combinedOutput merges the stdout/stderr capture and the GinkgoWriter capture the way
 // Ginkgo's own reporters do.

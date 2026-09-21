@@ -1,7 +1,9 @@
 package match
 
 import (
+	"strconv"
 	"testing"
+	"time"
 
 	. "github.com/onsi/gomega"
 
@@ -33,6 +35,65 @@ func TestRequestAndNoReplyPredicates(t *testing.T) {
 	noReply := ev(traceassert.ToServer, "PUB", "ORDERS", "", "hi")
 	g.Expect(noReply).To(HaveNoReply())
 	g.Expect(noReply).NotTo(BeRequest())
+}
+
+func TestShapingPredicates(t *testing.T) {
+	g := NewWithT(t)
+	shaped := func(action string) *traceassert.Event {
+		return &traceassert.Event{Verb: "MSG", Shaped: &traceassert.Shaped{Rule: "drop-ack-30", Action: action}}
+	}
+	plain := &traceassert.Event{Verb: "MSG"}
+
+	g.Expect(shaped("drop")).To(Dropped())
+	g.Expect(shaped("disconnect")).To(Dropped())
+	g.Expect(shaped("stall")).NotTo(Dropped())
+	g.Expect(shaped("throttle")).NotTo(Dropped())
+	g.Expect(plain).NotTo(Dropped())
+
+	g.Expect(plain).To(Delivered())
+	g.Expect(shaped("stall")).To(Delivered())
+	g.Expect(shaped("throttle")).To(Delivered())
+	g.Expect(shaped("drop")).NotTo(Delivered())
+	g.Expect(shaped("disconnect")).NotTo(Delivered())
+
+	g.Expect(shaped("drop")).To(ShapedBy("drop-ack-30"))
+	g.Expect(shaped("stall")).To(ShapedBy("drop-ack-30"))
+	g.Expect(shaped("drop")).NotTo(ShapedBy("other-rule"))
+	g.Expect(plain).NotTo(ShapedBy("drop-ack-30"))
+
+	// failure messages name the expectation
+	m := Dropped()
+	ok, err := m.Match(plain)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(ok).To(BeFalse())
+	g.Expect(m.FailureMessage(plain)).To(ContainSubstring("be dropped by the proxy"))
+	sb := ShapedBy("drop-ack-30")
+	ok, err = sb.Match(plain)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(ok).To(BeFalse())
+	g.Expect(sb.FailureMessage(plain)).To(ContainSubstring(`be shaped by rule "drop-ack-30"`))
+}
+
+func TestShapedByGuardOverFullTraceAndClientView(t *testing.T) {
+	g := NewWithT(t)
+
+	// the proxy dropped the ack: the guard counts it over the full trace, where the
+	// suite asserts the rule fired, and reads zero over the client view, which is
+	// what the client saw.
+	b := tracegen.New("client")
+	b.Info(`{}`).Connect("{}")
+	b.Pub("svc.echo", "_INBOX.r.1", []byte("hi"))
+	b.MsgString("_INBOX.r.1", "1", "ack").Shaped("drop-ack-30", "drop")
+	tr := loadTrace(t, b)
+
+	g.Expect(tr).To(Exactly(1, ShapedBy("drop-ack-30")))
+	g.Expect(tr.ClientView()).To(Exactly(0, ShapedBy("drop-ack-30")))
+
+	// over the full trace the dropped reply pairs; over the client view the request
+	// is unanswered, which is what the client experienced.
+	g.Expect(tr).To(RequestReply(BeRequest(), Dropped()))
+	g.Expect(tr.ClientView()).To(Exactly(1, BeRequest()))
+	g.Expect(tr.ClientView()).NotTo(RequestReply(BeRequest(), FromServer()))
 }
 
 func TestSubjectMatchers(t *testing.T) {
@@ -114,6 +175,67 @@ func TestFieldExtractors(t *testing.T) {
 		NotTo(SameValue(stream, name)) // a missing field fails rather than matching
 }
 
+func TestHeaderExtractors(t *testing.T) {
+	g := NewWithT(t)
+	hpub := func(hdr map[string][]string) *traceassert.Event {
+		return &traceassert.Event{Dir: traceassert.ToServer, Verb: "HPUB", Subject: "ORDERS", Header: hdr}
+	}
+
+	// HeaderField: present, absent, case-insensitive name, first of several values.
+	id := HeaderField("Nats-Batch-Id")
+	v, ok := id(hpub(map[string][]string{"Nats-Batch-Id": {"b1"}}))
+	g.Expect(ok).To(BeTrue())
+	g.Expect(v).To(Equal("b1"))
+	_, ok = id(hpub(map[string][]string{"Nats-Msg-Id": {"m1"}}))
+	g.Expect(ok).To(BeFalse())
+	_, ok = id(hpub(nil))
+	g.Expect(ok).To(BeFalse())
+	v, ok = id(hpub(map[string][]string{"nats-batch-id": {"b2"}}))
+	g.Expect(ok).To(BeTrue())
+	g.Expect(v).To(Equal("b2"))
+	v, ok = id(hpub(map[string][]string{"Nats-Batch-Id": {"first", "second"}}))
+	g.Expect(ok).To(BeTrue())
+	g.Expect(v).To(Equal("first"))
+
+	// HeaderInt: a numeric value parses, a non-numeric or absent one reports ok=false.
+	seq := HeaderInt("Nats-Batch-Sequence")
+	n, ok := seq(hpub(map[string][]string{"Nats-Batch-Sequence": {"7"}}))
+	g.Expect(ok).To(BeTrue())
+	g.Expect(n).To(Equal(7))
+	_, ok = seq(hpub(map[string][]string{"Nats-Batch-Sequence": {"seven"}}))
+	g.Expect(ok).To(BeFalse())
+	_, ok = seq(hpub(map[string][]string{"Nats-Batch-Sequence": {"1.5"}}))
+	g.Expect(ok).To(BeFalse())
+	_, ok = seq(hpub(nil))
+	g.Expect(ok).To(BeFalse())
+
+	// an atomic batch's publishes: the sequence runs over the header-bearing events
+	// and a plain publish in between is skipped, not a gap.
+	batch := func(id string, n int) *traceassert.Event {
+		return hpub(map[string][]string{"Nats-Batch-Id": {id}, "Nats-Batch-Sequence": {strconv.Itoa(n)}})
+	}
+	evs := []*traceassert.Event{
+		batch("b1", 1),
+		batch("b1", 2),
+		ev(traceassert.ToServer, "PUB", "other", "", "plain"),
+		batch("b1", 3),
+	}
+	g.Expect(evs).To(BeContiguousFrom(1, seq))
+	g.Expect(evs).To(BeMonotonic(seq))
+	g.Expect(evs).To(Exactly(3, HaveHeader("Nats-Batch-Id")))
+
+	// a gap in the header sequence fails with the line of the offending event.
+	gapped := []*traceassert.Event{batch("b1", 1), batch("b1", 3)}
+	g.Expect(gapped).NotTo(BeContiguousFrom(1, seq))
+	g.Expect(gapped).To(BeMonotonic(seq))
+
+	// SameValue over headers: a header equals a payload field on the same event.
+	ack := &traceassert.Event{Dir: traceassert.FromServer, Verb: "HMSG", Subject: "_INBOX.r.1",
+		Header: map[string][]string{"Nats-Batch-Id": {"b1"}}, Payload: []byte(`{"stream":"ORDERS","seq":3,"batch":"b1","count":3}`)}
+	g.Expect(ack).To(SameValue(id, PayloadField("batch")))
+	g.Expect(ack).NotTo(SameValue(HeaderField("Nats-Msg-Id"), PayloadField("batch")))
+}
+
 func TestStreamQuantifiers(t *testing.T) {
 	g := NewWithT(t)
 	tr := fastIngest(t) // INFO, CONNECT, SUB, 4×PUB, 2×MSG
@@ -189,6 +311,45 @@ func TestRequestReplyMatcher(t *testing.T) {
 	// wrong actual type is an error, not a mismatch.
 	_, err = RequestReply(BePub(), FromServer()).Match([]*traceassert.Event{})
 	g.Expect(err).To(HaveOccurred())
+}
+
+func TestRequestReplyOverSession(t *testing.T) {
+	g := NewWithT(t)
+	streamCreate := subject.MustParse("$JS.API.STREAM.CREATE.{stream}")
+
+	// the request went out on the first connection; its reply subject is delivered on
+	// the second, which must not count as an answer.
+	first := tracegen.New("client").Timestamp(time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC))
+	first.Info(`{}`).Connect("{}")
+	first.Pub("$JS.API.STREAM.CREATE.ORDERS", "_INBOX.r.1", []byte(`{"name":"ORDERS"}`))
+
+	second := tracegen.New("client").Timestamp(time.Date(2026, 3, 1, 12, 0, 1, 0, time.UTC))
+	second.Info(`{}`).Connect("{}")
+	second.MsgString("_INBOX.r.1", "9", `{"late":true}`)
+	second.Pub("$JS.API.STREAM.CREATE.BILLING", "_INBOX.r.2", []byte(`{"name":"BILLING"}`))
+	second.MsgString("_INBOX.r.2", "9", `{"hello":"world"}`)
+
+	s := traceassert.NewSession(loadTrace(t, second), loadTrace(t, first))
+
+	rr := RequestReply(MatchSubject(streamCreate), FromServer())
+	ok, err := rr.Match(s)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(ok).To(BeFalse())
+	g.Expect(rr.FailureMessage(s)).To(ContainSubstring("request at connection 0 line"))
+	g.Expect(rr.FailureMessage(s)).To(ContainSubstring("no correlated response"))
+
+	// merged into one trace the late reply would pair, so the session is what keeps
+	// the fault visible.
+	g.Expect(&traceassert.Trace{Events: s.Events()}).To(RequestReply(MatchSubject(streamCreate), FromServer()))
+
+	// restricted to the second connection by Conn every request is answered.
+	onSecond := MatchSubject(streamCreate).And(HaveField("Conn", 1))
+	g.Expect(s).To(RequestReply(onSecond, FromServer()))
+
+	// slice matchers run over the concatenated events.
+	g.Expect(s).To(Exactly(2, MatchSubject(streamCreate)))
+	g.Expect(s).To(HaveFirst(HaveField("Conn", 0)))
+	g.Expect(s).To(EndWith(HaveField("Conn", 1)))
 }
 
 func TestFailureMessages(t *testing.T) {
