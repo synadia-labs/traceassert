@@ -84,7 +84,12 @@ var _ = Describe("a fast-ingest batch through a shaping proxy", Label("reconnect
 			Expect(session).To(ContainEvent(Dropped().And(
 				SubjectCapture(fiReply, "seq", Equal(30)), PayloadJSON("type", Equal("ack")))))
 			Expect(acks).To(Exactly(1, Dropped()))
-			Expect(acks).To(Exactly(len(acks)-1, Delivered()))
+
+			// The acks that reached the client, named rather than counted, so a
+			// second drop fails here as well.
+			for _, seq := range []int{0, 10, 20, 40} {
+				Expect(acks).To(Exactly(1, Delivered().And(PayloadJSON("seq", BeNumerically("==", seq)))))
+			}
 		})
 
 		It("left the request for sequence 30 unanswered in the client's view", func() {
@@ -99,21 +104,21 @@ var _ = Describe("a fast-ingest batch through a shaping proxy", Label("reconnect
 			Expect(pairs[0].Response).To(BeNil())
 		})
 
-		It("granted no credit, and the client stayed within the window it held", func() {
+		It("did not stop the client publishing within the credit of the ack for 20", func() {
 			// The batch resumes on the second connection with the sequence it left
 			// at, so the events of both connections replay as one flow. A *Session
-			// would start the replay afresh on connection 1, where the first send is
-			// sequence 36 against a last ack of zero.
+			// starts the replay afresh on each connection, where the first send here
+			// is sequence 36 against a last ack of zero.
 			Expect(session.ClientView().Events()).To(RespectCreditWindow(isBatchPub, isFlowAck,
 				GrammarInt(fiReply, "seq"), PayloadInt("seq"), PayloadInt("msgs"), 1, outstanding))
 		})
 
-		It("with the multiplier at one, fails the sends past 30 over the client view and passes them over the full session", func() {
+		It("with the multiplier at one, the publish of 31 is past that credit", func() {
 			// The client sent 31 to 40 on the credit of the ack for 20, two windows
-			// ahead. Over the client view a single window refuses the publish of 31
-			// and the failure names it by line; over the full session the dropped ack
-			// counts as credit the client never received, and the same window
-			// passes. That is why the matcher runs over the client view.
+			// ahead. One window allows ten, so the publish of 31 fails over the client
+			// view and the failure names its line. Over the full session the dropped
+			// ack counts as credit the client never received and the same window
+			// passes, which is why the matcher runs over the client view.
 			oneWindow := RespectCreditWindow(isBatchPub, isFlowAck,
 				GrammarInt(fiReply, "seq"), PayloadInt("seq"), PayloadInt("msgs"), 1, 1)
 			Expect(session.ClientView().Events()).NotTo(oneWindow)
@@ -132,7 +137,7 @@ var _ = Describe("a fast-ingest batch through a shaping proxy", Label("reconnect
 			Expect(session.ServerView()).NotTo(ContainEvent(batchPub(35)))
 		})
 
-		It("re-subscribed the inbox before publishing resumed on the new connection", func() {
+		It("left the client re-subscribing the inbox before it published again", func() {
 			// Conn is the index of the event's capture in the session; 1 is the
 			// connection the client made after the close.
 			subsAndPubs := session.Select(func(e *traceassert.Event) bool {
@@ -149,18 +154,17 @@ var _ = Describe("a fast-ingest batch through a shaping proxy", Label("reconnect
 			Expect(session.Traces[1].Select(isBatchPub)).To(BeContiguousFrom(left+1, GrammarInt(fiReply, "seq")))
 		})
 
-		It("was reported by the server as a gap, since the publish the close took never arrived", func() {
+		It("took a publish the server never saw, which it reported as a gap", func() {
 			left := lastSeq(session.Traces[0].Select(isBatchPub))
 			Expect(session.Traces[1]).To(RequestReply(batchPub(left+1),
 				PayloadJSON("type", Equal("gap")).And(PayloadJSON("last_seq", BeNumerically("==", left)))))
 		})
 	})
 
-	// The harness records a rule that needs a capability the client lacks as
-	// capability-absent from the client tool's capabilities document, and a spec
-	// that reaches ta carries the same vocabulary in its Skip message, which ta
-	// copies verbatim into the CTRF entry's skip_reason. This example runs over a
-	// committed capture with no capabilities document, so the spec skips.
+	// A generated suite skips a rule whose capability the client tool did not
+	// declare, and writes the harness vocabulary into the Skip message; ta copies
+	// that message into the CTRF entry's skip_reason. This spec always skips, to
+	// show what ends up in the report.
 	It("needs a capability the client did not declare", func() {
 		Skip("capability-absent: no fast ingest")
 	})

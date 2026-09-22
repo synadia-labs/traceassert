@@ -1,9 +1,9 @@
 // Command gen records the fixture of the shaped example. It publishes one ADR-50
 // fast-ingest batch through the capture proxy of an ntf-server instance whose shaping
 // set (shaping.json) drops the flow ack for batch sequence 30 and closes the
-// connection on the publish of sequence 35. The client stalls when it runs out of
-// credit, reconnects, re-subscribes its inbox and resumes the batch, so the proxy
-// stores two captures. The command then fetches both from the TRACES object store on
+// connection on the publish of sequence 35. nats.go reconnects, the client
+// re-subscribes its inbox and the batch resumes, so the proxy stores two
+// captures. The command then fetches both from the TRACES object store on
 // the management server and writes them, in header timestamp order, as
 // reconnect.expanded.json and reconnect-1.expanded.json under --out.
 //
@@ -41,20 +41,20 @@ const (
 	bucket         = "TRACES"
 
 	// messages is the batch size; the last one is the commit. The disconnect rule
-	// fires on sequence 35 and the client stalls at 40, so the batch must run past 40.
+	// fires on sequence 35, so the batch has to run past it to show the reconnect.
 	messages = 45
 	// flow is the ack frequency the client asks for; a single batch on the stream
 	// is granted exactly that, so the server acks at 10, 20, 30 and 40.
 	flow = 10
 	// outstanding is how many ack windows the client may run ahead of its last ack.
-	// With the ack for 30 lost the client sends up to 40 on the credit of ack 20 and
-	// stalls there until the ack for 40 arrives on the new connection.
+	// The ack for 30 is dropped, so from 31 the client publishes on the credit of the
+	// ack for 20, which covers it to 40.
 	outstanding = 2
 
-	// pace is the gap between publishes: each ack reaches the proxy before the next
-	// publish, so every run orders acks and publishes the same way. closePace follows
-	// the publish the proxy closes on: the client notices the close before it
-	// publishes again, so the next publish is buffered and sent on the new connection.
+	// pace is the gap between publishes. Each ack reaches the proxy before the next
+	// publish, so every run orders acks and publishes the same way. closePace is the
+	// gap after the publish the proxy closes on: the reconnect finishes before the
+	// client publishes again, so that publish opens the second capture.
 	pace      = 5 * time.Millisecond
 	closePace = 500 * time.Millisecond
 )
