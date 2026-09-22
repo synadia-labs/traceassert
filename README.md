@@ -163,11 +163,11 @@ Expect(trace).To(Exactly(1, ShapedBy("drop-ack-30")))
 Expect(trace.ClientView()).To(AtLeast(2, MatchSubject(publish))) // the client resent after the lost ack
 ```
 
-The [shaped example](examples/shaped) is the worked example for shaped sessions: two captures
-of one fast-ingest client, recorded through a shaping proxy that dropped the flow ack for
-sequence 30 and closed the connection on the publish of sequence 35. Its suite loads them as a
-session, guards on both rules, asserts the client's reaction over the client view, and runs
-under `ta` with the rule ids as labels and a skip reason in the CTRF report.
+The [shaped example](examples/shaped) is the worked example for shaped sessions. A shaping proxy
+dropped the flow ack for sequence 30 and closed the connection on the publish of sequence 35, and
+the run left two captures of one fast-ingest client. The suite loads them as a session and checks
+that each rule fired before asserting the client's reaction over the client view. Under `ta` the
+rule ids become labels and the skip reason reaches the CTRF report.
 
 ## Quick start
 
