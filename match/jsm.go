@@ -7,18 +7,19 @@ import (
 	"strings"
 
 	"github.com/nats-io/jsm.go/api"
+	"github.com/nats-io/jsm.go/registry"
 	gtypes "github.com/onsi/gomega/types"
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v5"
 
 	"github.com/synadia-labs/traceassert"
 )
 
-// SchemaValidator implements api.StructValidator using JSON Schema, turning jsm.go's
-// otherwise no-op Validate() into real deep validation against api.Schema().
+// SchemaValidator implements registry/validator.StructValidator using JSON Schema, turning
+// jsm.go's otherwise no-op Validate() into real deep validation against registry.Schema().
 type SchemaValidator struct{}
 
 func (v SchemaValidator) ValidateStruct(data any, schemaType string) (ok bool, errs []string) {
-	s, err := api.Schema(schemaType)
+	s, err := registry.Schema(schemaType)
 	if err != nil {
 		return false, []string{fmt.Sprintf("unknown schema type %s", schemaType)}
 	}
@@ -63,18 +64,18 @@ func (v SchemaValidator) ValidateStruct(data any, schemaType string) (ok bool, e
 // the payload's embedded `type` field.
 func decodeJS(e *traceassert.Event) (msg any, schemaType string, err error) {
 	if e.Dir == traceassert.ToServer && e.Subject != "" {
-		if v, terr := api.TypeForRequestSubject(e.Subject); terr == nil {
+		if v, terr := registry.TypeForRequestSubject(e.Subject); terr == nil {
 			if uerr := json.Unmarshal(e.Payload, v); uerr != nil {
 				return nil, "", fmt.Errorf("decode request payload: %w", uerr)
 			}
 			st := ""
-			if sm, ok := v.(api.SchemaManagedType); ok {
+			if sm, ok := v.(registry.SchemaManagedType); ok {
 				st = sm.SchemaType()
 			}
 			return v, st, nil
 		}
 	}
-	st, m, perr := api.ParseMessage(e.Payload)
+	st, m, perr := registry.ParseMessage(e.Payload)
 	if perr != nil {
 		return nil, "", fmt.Errorf("parse message: %w", perr)
 	}
@@ -82,7 +83,7 @@ func decodeJS(e *traceassert.Event) (msg any, schemaType string, err error) {
 }
 
 func validateJS(v any) (bool, string) {
-	sm, ok := v.(api.SchemaManagedType)
+	sm, ok := v.(registry.SchemaManagedType)
 	if !ok {
 		return false, fmt.Sprintf("type %T is not schema-managed", v)
 	}
@@ -98,7 +99,7 @@ func validateJS(v any) (bool, string) {
 // is given — the type is derived from the subject.
 func BeValidJetStreamRequest() M {
 	return eventDetail("be a valid JetStream API request", func(e *traceassert.Event) (bool, string) {
-		v, err := api.TypeForRequestSubject(e.Subject)
+		v, err := registry.TypeForRequestSubject(e.Subject)
 		if err != nil {
 			return false, fmt.Sprintf("subject %q is not a JetStream API request: %v", e.Subject, err)
 		}
@@ -113,7 +114,7 @@ func BeValidJetStreamRequest() M {
 // jsm.go schema and whose payload is schema-valid (responses, events, advisories).
 func BeValidJetStreamMessage() M {
 	return eventDetail("be a valid JetStream message", func(e *traceassert.Event) (bool, string) {
-		_, msg, err := api.ParseMessage(e.Payload)
+		_, msg, err := registry.ParseMessage(e.Payload)
 		if err != nil {
 			return false, fmt.Sprintf("could not parse message: %v", err)
 		}
@@ -158,7 +159,7 @@ func DecodeJetStream(inner gtypes.GomegaMatcher) M {
 //		HaveField("BatchSize", Equal(5)))
 func DecodeJetStreamAs(schemaType string, inner gtypes.GomegaMatcher) M {
 	return eventDetail(fmt.Sprintf("decode as %s and match its fields", schemaType), func(e *traceassert.Event) (bool, string) {
-		v, known := api.NewMessage(schemaType)
+		v, known := registry.NewMessage(schemaType)
 		if !known {
 			return false, fmt.Sprintf("unknown jsm.go schema type %q", schemaType)
 		}

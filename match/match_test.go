@@ -268,6 +268,6 @@ func TestJSMMatchers(t *testing.T) {
 	// but it can be decoded explicitly by schema name (the reply-to-a-publish context).
 	pubAck := ev(traceassert.FromServer, "MSG", "_INBOX.r.2", "", `{"stream":"FAST","seq":5,"batch":"b1","count":5}`)
 	g.Expect(pubAck).NotTo(BeJetStreamType("io.nats.jetstream.api.v1.pub_ack_response"))
-	g.Expect(pubAck).To(DecodeJetStreamAs("io.nats.jetstream.api.v1.pub_ack_response", HaveField("BatchSize", Equal(5))))
+	g.Expect(pubAck).To(DecodeJetStreamAs("io.nats.jetstream.api.v1.pub_ack_response", HaveField("BatchSize", Equal(uint64(5)))))
 	g.Expect(pubAck).To(DecodeJetStreamAs("io.nats.jetstream.api.v1.pub_ack_response", HaveField("Stream", Equal("FAST"))))
 }
