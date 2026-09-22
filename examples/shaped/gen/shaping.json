@@ -1,0 +1,33 @@
+{
+  "id": "reconnect",
+  "connection_name": "^shaped-reconnect$",
+  "rules": [
+    {
+      "id": "drop-ack-30",
+      "match": {
+        "direction": "from_server",
+        "verb": ["MSG"],
+        "subject": {
+          "grammar": "{prefix:rest}.{flow:int}.{gap:enum(ok,fail)}.{seq:int}.{op:int}.$FI",
+          "where": {"seq": 30}
+        },
+        "payload": {"json": {"type": "ack"}}
+      },
+      "action": "drop",
+      "limit": 1
+    },
+    {
+      "id": "disconnect-pub-35",
+      "match": {
+        "direction": "to_server",
+        "verb": ["PUB"],
+        "reply": {
+          "grammar": "{prefix:rest}.{flow:int}.{gap:enum(ok,fail)}.{seq:int}.{op:int}.$FI",
+          "where": {"seq": 35, "op": 1}
+        }
+      },
+      "action": "disconnect",
+      "limit": 1
+    }
+  ]
+}
