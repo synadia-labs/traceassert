@@ -271,3 +271,83 @@ func TestJSMMatchers(t *testing.T) {
 	g.Expect(pubAck).To(DecodeJetStreamAs("io.nats.jetstream.api.v1.pub_ack_response", HaveField("BatchSize", Equal(uint64(5)))))
 	g.Expect(pubAck).To(DecodeJetStreamAs("io.nats.jetstream.api.v1.pub_ack_response", HaveField("Stream", Equal("FAST"))))
 }
+
+// requestDetail runs BeValidJetStreamRequest against a client request on subj carrying
+// payload, returning whether it matched and the failure message.
+func requestDetail(t *testing.T, subj string, payload string) (bool, string) {
+	t.Helper()
+	m := BeValidJetStreamRequest()
+	e := ev(traceassert.ToServer, "PUB", subj, "_INBOX.r.1", payload)
+	ok, err := m.Match(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ok, m.FailureMessage(e)
+}
+
+func TestBeValidJetStreamRequestSubjects(t *testing.T) {
+	g := NewWithT(t)
+
+	// a JetStream domain and a custom API prefix are normalized to $JS.API. to type the request.
+	for _, subj := range []string{"$JS.hub.API.STREAM.INFO.ORDERS", "JS.acc.API.STREAM.INFO.ORDERS"} {
+		ok, msg := requestDetail(t, subj, `{"subjects_filter":"orders.>"}`)
+		g.Expect(ok).To(BeTrue(), "%s: %s", subj, msg)
+	}
+
+	// a consumer create whose subject carries a wildcard filter is still typed from its subject.
+	for _, c := range []struct{ subj, body string }{
+		{"$JS.API.CONSUMER.CREATE.ORDERS.C1.orders.>", `{"stream_name":"ORDERS","config":{"durable_name":"C1","deliver_policy":"all","ack_policy":"explicit","replay_policy":"instant"}}`},
+		{"$JS.hub.API.CONSUMER.CREATE.ORDERS.C1.orders.*", `{"stream_name":"ORDERS","config":{"durable_name":"C1","deliver_policy":"all","ack_policy":"explicit","replay_policy":"instant"}}`},
+		{"$JS.API.CONSUMER.CREATE.KV_b.C1.$KV.b.>", `{"stream_name":"KV_b","config":{"durable_name":"C1","filter_subject":"$KV.b.>","deliver_policy":"all","ack_policy":"explicit","replay_policy":"instant"}}`},
+	} {
+		ok, msg := requestDetail(t, c.subj, c.body)
+		g.Expect(ok).To(BeTrue(), "%s: %s", c.subj, msg)
+	}
+
+	// a subject that is not an API request fails, naming the original subject.
+	ok, msg := requestDetail(t, "orders.new", `{}`)
+	g.Expect(ok).To(BeFalse())
+	g.Expect(msg).To(ContainSubstring(`subject "orders.new" is not a JetStream API request`))
+}
+
+func TestBeValidJetStreamRequestRawPayload(t *testing.T) {
+	g := NewWithT(t)
+
+	// max_age is required by stream_create_request; decoding into the struct used to fill
+	// it in as 0, so validating the raw payload is what catches its absence.
+	var body map[string]any
+	g.Expect(json.Unmarshal(validRequestJSON(t), &body)).To(Succeed())
+	g.Expect(body).To(HaveKey("max_age"))
+	delete(body, "max_age")
+	missing, err := json.Marshal(body)
+	g.Expect(err).NotTo(HaveOccurred())
+	ok, msg := requestDetail(t, "$JS.API.STREAM.CREATE.ORDERS", string(missing))
+	g.Expect(ok).To(BeFalse())
+	g.Expect(msg).To(ContainSubstring("max_age"))
+
+	// an empty body is treated as {}: fine for STREAM.INFO, missing required fields for STREAM.CREATE.
+	ok, msg = requestDetail(t, "$JS.API.STREAM.INFO.ORDERS", "")
+	g.Expect(ok).To(BeTrue(), msg)
+	ok, msg = requestDetail(t, "$JS.API.STREAM.CREATE.ORDERS", "")
+	g.Expect(ok).To(BeFalse())
+	g.Expect(msg).To(ContainSubstring("missing properties"))
+
+	// a pull request body may be a bare non-negative integer or an object.
+	for _, body := range []string{`1`, `{"batch":500}`} {
+		ok, msg = requestDetail(t, "$JS.API.CONSUMER.MSG.NEXT.ORDERS.C1", body)
+		g.Expect(ok).To(BeTrue(), "%s: %s", body, msg)
+	}
+	ok, msg = requestDetail(t, "$JS.API.CONSUMER.MSG.NEXT.ORDERS.C1", `-1`)
+	g.Expect(ok).To(BeFalse())
+	g.Expect(msg).To(ContainSubstring("must be >= 0 but found -1"))
+
+	// durable consumer create is typed from its subject.
+	ok, msg = requestDetail(t, "$JS.API.CONSUMER.DURABLE.CREATE.ORDERS.C1",
+		`{"stream_name":"ORDERS","config":{"durable_name":"C1","deliver_policy":"all","ack_policy":"explicit","replay_policy":"instant"}}`)
+	g.Expect(ok).To(BeTrue(), msg)
+
+	// a non-empty body that is not JSON does not decode.
+	ok, msg = requestDetail(t, "$JS.API.STREAM.INFO.ORDERS", `not json`)
+	g.Expect(ok).To(BeFalse())
+	g.Expect(msg).To(ContainSubstring("payload did not decode"))
+}
