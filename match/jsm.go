@@ -1,8 +1,11 @@
 package match
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 
@@ -19,15 +22,6 @@ import (
 type SchemaValidator struct{}
 
 func (v SchemaValidator) ValidateStruct(data any, schemaType string) (ok bool, errs []string) {
-	s, err := registry.Schema(schemaType)
-	if err != nil {
-		return false, []string{fmt.Sprintf("unknown schema type %s", schemaType)}
-	}
-	sch, err := jsonschema.CompileString("schema.json", string(s))
-	if err != nil {
-		return false, []string{fmt.Sprintf("could not load schema %s: %s", schemaType, err)}
-	}
-
 	// jsonschema only accepts basic primitives, so round-trip through JSON.
 	var d any
 	dj, err := json.Marshal(data)
@@ -36,6 +30,21 @@ func (v SchemaValidator) ValidateStruct(data any, schemaType string) (ok bool, e
 	}
 	if err := json.Unmarshal(dj, &d); err != nil {
 		return false, []string{fmt.Sprintf("could not de-serialize data: %s", err)}
+	}
+
+	return validateDecoded(d, schemaType)
+}
+
+// validateDecoded validates d, a value already decoded from JSON by encoding/json (numbers
+// as float64 or json.Number), against the jsm.go schema named by schemaType.
+func validateDecoded(d any, schemaType string) (ok bool, errs []string) {
+	s, err := registry.Schema(schemaType)
+	if err != nil {
+		return false, []string{fmt.Sprintf("unknown schema type %s", schemaType)}
+	}
+	sch, err := jsonschema.CompileString("schema.json", string(s))
+	if err != nil {
+		return false, []string{fmt.Sprintf("could not load schema %s: %s", schemaType, err)}
 	}
 
 	if err := sch.Validate(d); err != nil {
@@ -96,18 +105,59 @@ func validateJS(v any) (bool, string) {
 
 // BeValidJetStreamRequest matches a client→server event whose subject is a JetStream
 // API request and whose payload is schema-valid for that request type. No schema name
-// is given — the type is derived from the subject.
+// is given — the type is derived from the subject, which may carry a JetStream domain
+// ($JS.<domain>.API.) or a custom API prefix. The raw payload is validated against the
+// schema, and an empty payload is treated as {}.
 func BeValidJetStreamRequest() M {
 	return eventDetail("be a valid JetStream API request", func(e *traceassert.Event) (bool, string) {
-		v, err := registry.TypeForRequestSubject(e.Subject)
+		subj, ok := registry.NormalizeAPISubject(e.Subject)
+		if !ok {
+			return false, fmt.Sprintf("subject %q is not a JetStream API request", e.Subject)
+		}
+		v, err := registry.TypeForRequestSubject(subj)
 		if err != nil {
 			return false, fmt.Sprintf("subject %q is not a JetStream API request: %v", e.Subject, err)
 		}
-		if err := json.Unmarshal(e.Payload, v); err != nil {
+		sm, ok := v.(registry.SchemaManagedType)
+		if !ok {
+			return false, fmt.Sprintf("request type %T for subject %q is not schema-managed", v, e.Subject)
+		}
+
+		payload := e.Payload
+		if len(payload) == 0 {
+			payload = []byte("{}")
+		}
+		d, err := decodeRawJSON(payload)
+		if err != nil {
 			return false, fmt.Sprintf("payload did not decode: %v", err)
 		}
-		return validateJS(v)
+
+		ok, errs := validateDecoded(d, sm.SchemaType())
+		if !ok {
+			return false, strings.Join(errs, "; ")
+		}
+		return true, ""
 	})
+}
+
+// decodeRawJSON decodes a payload holding exactly one JSON value for schema validation,
+// keeping numbers as json.Number so large integers are not rounded through float64.
+func decodeRawJSON(payload []byte) (any, error) {
+	dec := json.NewDecoder(bytes.NewReader(payload))
+	dec.UseNumber()
+
+	var d any
+	err := dec.Decode(&d)
+	if err != nil {
+		return nil, err
+	}
+
+	_, err = dec.Token()
+	if !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("unexpected data after the JSON value")
+	}
+
+	return d, nil
 }
 
 // BeValidJetStreamMessage matches any message whose embedded `type` identifies a

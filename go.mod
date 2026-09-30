@@ -5,7 +5,7 @@ go 1.26.0
 require (
 	github.com/choria-io/fisk v0.9.1
 	github.com/jedib0t/go-pretty/v6 v6.8.3
-	github.com/nats-io/jsm.go v0.5.0
+	github.com/nats-io/jsm.go v0.5.1-0.20260930165957-e88974e7ac20
 	github.com/nats-io/natscli v0.5.0
 	github.com/onsi/gomega v1.43.1
 	github.com/santhosh-tekuri/jsonschema/v5 v5.3.1
