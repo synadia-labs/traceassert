@@ -13,6 +13,8 @@ import (
 
 	"github.com/jedib0t/go-pretty/v6/text"
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v5"
+
+	"github.com/synadia-labs/traceassert/ctrf"
 )
 
 // spec builds an It spec report in the given state.
@@ -243,7 +245,7 @@ func TestCTRFDocument(t *testing.T) {
 	raw, doc := ctrfDocument(t, rep)
 	validateCTRF(t, raw)
 
-	if doc["reportFormat"] != "CTRF" || doc["specVersion"] != ctrfSpecVersion {
+	if doc["reportFormat"] != "CTRF" || doc["specVersion"] != ctrf.SpecVersion {
 		t.Errorf("reportFormat/specVersion = %v/%v", doc["reportFormat"], doc["specVersion"])
 	}
 	results := doc["results"].(map[string]any)
