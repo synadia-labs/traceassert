@@ -11,17 +11,14 @@ import (
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/jedib0t/go-pretty/v6/text"
 	"github.com/nats-io/natscli/columns"
+
+	"github.com/synadia-labs/traceassert/ctrf"
 )
 
 // maxOutputBytes bounds the captured output ta embeds per spec, so a chatty suite
 // (trace assertions print large diffs) cannot balloon the report into hundreds of
 // megabytes. The tail is kept: a failure's useful context is at the end.
 const maxOutputBytes = 8192
-
-// ctrfSpecVersion is the CTRF specification version the emitted document follows. It
-// is the version spec/ctrf.md in github.com/ctrf-io/ctrf states for the schema
-// committed at testdata/ctrf.schema.json; bump it together with that file.
-const ctrfSpecVersion = "0.0.0"
 
 // Report is ta's in-memory record of a `ta run`: time, what ran, against which
 // traces, and one TestResult per spec. The human summary renders from it directly;
@@ -88,90 +85,14 @@ type TestResult struct {
 	leaf       string
 }
 
-// ctrfReport is the JSON report `ta run` writes: a Common Test Report Format
-// document, https://ctrf.io. The types are ta's own so the runner does not take a
-// dependency for a document it only writes; the committed schema pins the shape.
-type ctrfReport struct {
-	ReportFormat string      `json:"reportFormat"`
-	SpecVersion  string      `json:"specVersion"`
-	Results      ctrfResults `json:"results"`
-}
-
-type ctrfResults struct {
-	Tool    ctrfTool     `json:"tool"`
-	Summary ctrfSummary  `json:"summary"`
-	Tests   []ctrfTest   `json:"tests"`
-	Extra   ctrfRunExtra `json:"extra"`
-}
-
-type ctrfTool struct {
-	Name    string `json:"name"`
-	Version string `json:"version"`
-}
-
-// ctrfSummary counts the entries in Tests, so a failed setup node that is listed is
-// counted in both Tests and Failed. Start and Stop are epoch milliseconds. Other is
-// always zero: every Ginkgo state maps to one of the four named statuses.
-type ctrfSummary struct {
-	Tests   int   `json:"tests"`
-	Passed  int   `json:"passed"`
-	Failed  int   `json:"failed"`
-	Skipped int   `json:"skipped"`
-	Pending int   `json:"pending"`
-	Other   int   `json:"other"`
-	Start   int64 `json:"start"`
-	Stop    int64 `json:"stop"`
-}
-
-// ctrfTest is one spec. Duration is milliseconds, Suite the Ginkgo container texts,
-// Tags the Ginkgo labels, RawStatus Ginkgo's own state before it is mapped to Status.
-type ctrfTest struct {
-	Name      string         `json:"name"`
-	Status    string         `json:"status"`
-	Duration  int64          `json:"duration"`
-	Suite     []string       `json:"suite"`
-	FilePath  string         `json:"filePath,omitempty"`
-	Line      int            `json:"line,omitempty"`
-	Message   string         `json:"message,omitempty"`
-	Stdout    []string       `json:"stdout,omitempty"`
-	Tags      []string       `json:"tags,omitempty"`
-	RawStatus string         `json:"rawStatus"`
-	Extra     *ctrfTestExtra `json:"extra,omitempty"`
-}
-
-type ctrfTestExtra struct {
-	SkipReason string `json:"skip_reason"`
-}
-
-// ctrfRunExtra carries the run's own fields under results.extra. Packages lists every
-// test package, so a package that could not run to a verdict, and therefore has no
-// test entries to carry it, is still visible with its error.
-type ctrfRunExtra struct {
-	Description          string        `json:"description,omitempty"`
-	SuiteDir             string        `json:"suite_dir"`
-	TracesDir            string        `json:"traces_dir"`
-	Success              bool          `json:"success"`
-	HasProgrammaticFocus bool          `json:"has_programmatic_focus"`
-	Packages             []ctrfPackage `json:"packages"`
-}
-
-type ctrfPackage struct {
-	Package     string `json:"package"`
-	Description string `json:"description,omitempty"`
-	Path        string `json:"path,omitempty"`
-	Succeeded   bool   `json:"succeeded"`
-	DurationMS  int64  `json:"duration_ms"`
-	Error       string `json:"error,omitempty"`
-}
-
 // toCTRF converts the run into its CTRF document.
-func (r *Report) toCTRF() ctrfReport {
-	tests := []ctrfTest{}
-	packages := []ctrfPackage{}
-	var sum ctrfSummary
+func (r *Report) toCTRF() ctrf.Report {
+	tests := []ctrf.Test{}
+	packages := []ctrf.Package{}
+	var sum ctrf.Summary
 
 	for _, s := range r.Suites {
-		packages = append(packages, ctrfPackage{
+		packages = append(packages, ctrf.Package{
 			Package:     s.Package,
 			Description: s.Description,
 			Path:        s.Path,
@@ -198,14 +119,14 @@ func (r *Report) toCTRF() ctrfReport {
 	sum.Start = r.StartedAt.UnixMilli()
 	sum.Stop = r.FinishedAt.UnixMilli()
 
-	return ctrfReport{
-		ReportFormat: "CTRF",
-		SpecVersion:  ctrfSpecVersion,
-		Results: ctrfResults{
-			Tool:    ctrfTool{Name: "ta", Version: Version},
+	return ctrf.Report{
+		ReportFormat: ctrf.ReportFormat,
+		SpecVersion:  ctrf.SpecVersion,
+		Results: ctrf.Results{
+			Tool:    ctrf.Tool{Name: "ta", Version: Version},
 			Summary: sum,
 			Tests:   tests,
-			Extra: ctrfRunExtra{
+			Extra: ctrf.RunExtra{
 				Description:          r.Description,
 				SuiteDir:             r.SuiteDir,
 				TracesDir:            r.TracesDir,
@@ -221,7 +142,7 @@ func (r *Report) toCTRF() ctrfReport {
 // suite element, so a spec with no containers (a top-level It, or a setup node such as
 // BeforeSuite) is placed under the Ginkgo suite description, or under the package
 // import path when the suite has no description.
-func (t *TestResult) toCTRF(s *SuiteResult) ctrfTest {
+func (t *TestResult) toCTRF(s *SuiteResult) ctrf.Test {
 	suite := t.containers
 	if len(suite) == 0 {
 		suite = []string{s.Description}
@@ -230,7 +151,7 @@ func (t *TestResult) toCTRF(s *SuiteResult) ctrfTest {
 		}
 	}
 
-	entry := ctrfTest{
+	entry := ctrf.Test{
 		Name:      t.Name,
 		Status:    ctrfStatus(t.State),
 		Duration:  t.Duration.Milliseconds(),
@@ -243,7 +164,7 @@ func (t *TestResult) toCTRF(s *SuiteResult) ctrfTest {
 		RawStatus: t.State,
 	}
 	if t.SkipReason != "" {
-		entry.Extra = &ctrfTestExtra{SkipReason: t.SkipReason}
+		entry.Extra = &ctrf.TestExtra{SkipReason: t.SkipReason}
 	}
 	return entry
 }
