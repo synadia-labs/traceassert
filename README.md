@@ -351,6 +351,7 @@ typed Go structs.
 |----------------------------------------|------------------------------------------------------------------------------------------------------|
 | `BeValidJetStreamRequest()`            | subject is a JS API request and payload is schema-valid for it (type from the subject)               |
 | `BeValidJetStreamMessage()`            | payload's embedded `type` names a schema and it is schema-valid (responses, events, advisories)      |
+| `BeValidSchemaMessage()`               | payload is an object whose string `type` names a schema and the raw payload is schema-valid          |
 | `BeJetStreamType(schemaType)`          | the derived/detected schema type equals `schemaType`                                                 |
 | `DecodeJetStream(inner)`               | decodes to the typed struct (auto-detected) and `inner` matches it                                   |
 | `DecodeJetStreamAs(schemaType, inner)` | decodes as the named type (for payloads with no `type` field, e.g. a pub ack) and `inner` matches it |
@@ -358,11 +359,19 @@ typed Go structs.
 
 ```go
 Expect(req).To(BeValidJetStreamRequest())
+Expect(reply).To(BeValidSchemaMessage()) // e.g. a micro $SRV.INFO reply, validated as sent
 Expect(req).To(DecodeJetStream(HaveField("Name", Equal("ORDERS"))))
 Expect(ack).To(DecodeJetStreamAs("io.nats.jetstream.api.v1.pub_ack_response",
     HaveField("BatchSize", Equal(5))))
 Expect(reply).To(HaveAPILevel(BeNumerically(">=", 4))) // stream/consumer hosted at level >= 4
 ```
+
+`BeValidSchemaMessage()` validates the payload as it was sent rather than its decoded Go
+struct, so a required field that is absent, or `null` where the schema wants a value, fails.
+It is the only matcher that validates micro service replies, whose nats.go types
+`BeValidJetStreamMessage()` cannot validate. `SchemaMessageType(payload)` applies the same
+selection test - a JSON object with a string `type` that names a schema - and returns that
+type, for picking the messages to validate.
 
 ### Selection & quantifiers
 

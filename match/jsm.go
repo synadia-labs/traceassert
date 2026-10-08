@@ -172,6 +172,86 @@ func BeValidJetStreamMessage() M {
 	})
 }
 
+// BeValidSchemaMessage matches a message whose payload is a JSON object with a string
+// `type` naming a jsm.go schema, and whose raw payload is schema-valid for that type
+// (responses, events, advisories, micro service replies). Unlike BeValidJetStreamMessage
+// the payload is not decoded into its Go struct first, so wire defects the struct would
+// hide - a required field that is absent, or null where the schema wants a value - fail
+// validation. A payload with no `type`, or a type with no schema, fails.
+// SchemaMessageType applies the same selection test, for picking the messages this
+// matcher can validate.
+func BeValidSchemaMessage() M {
+	return eventDetail("be a valid schema message", func(e *traceassert.Event) (bool, string) {
+		d, st, reason := schemaMessage(e.Payload)
+		if reason != "" {
+			return false, reason
+		}
+
+		ok, errs := validateDecoded(d, st)
+		if !ok {
+			return false, strings.Join(errs, "; ")
+		}
+		return true, ""
+	})
+}
+
+// SchemaMessageType reports the schema type of payload when it is a JSON object with a
+// string `type` for which jsm.go has a schema, the test BeValidSchemaMessage uses to
+// decide a message can be validated. It does not validate the payload against the schema.
+func SchemaMessageType(payload []byte) (schemaType string, ok bool) {
+	_, st, reason := schemaMessage(payload)
+	if reason != "" {
+		return "", false
+	}
+	return st, true
+}
+
+// schemaMessage decodes payload and reports its decoded value and schema type, or a
+// reason it is not a JSON object with a string `type` that names a jsm.go schema.
+func schemaMessage(payload []byte) (decoded any, schemaType string, reason string) {
+	d, err := decodeRawJSON(payload)
+	if err != nil {
+		return nil, "", fmt.Sprintf("payload did not decode: %v", err)
+	}
+	obj, ok := d.(map[string]any)
+	if !ok {
+		return nil, "", fmt.Sprintf("payload is a JSON %s, not an object", jsonKind(d))
+	}
+	raw, ok := obj["type"]
+	if !ok {
+		return nil, "", "payload has no \"type\" field"
+	}
+	st, ok := raw.(string)
+	if !ok {
+		return nil, "", fmt.Sprintf("payload \"type\" is a JSON %s, not a string", jsonKind(raw))
+	}
+	_, err = registry.Schema(st)
+	if err != nil {
+		return nil, "", fmt.Sprintf("no schema for type %q", st)
+	}
+	return d, st, ""
+}
+
+// jsonKind names the JSON kind of v, a value decoded by decodeRawJSON.
+func jsonKind(v any) string {
+	switch v.(type) {
+	case nil:
+		return "null"
+	case bool:
+		return "boolean"
+	case json.Number:
+		return "number"
+	case string:
+		return "string"
+	case []any:
+		return "array"
+	case map[string]any:
+		return "object"
+	default:
+		return fmt.Sprintf("%T", v)
+	}
+}
+
 // BeJetStreamType matches when the event's derived/detected schema type equals
 // schemaType (e.g. "io.nats.jetstream.api.v1.pub_ack_response").
 func BeJetStreamType(schemaType string) M {
