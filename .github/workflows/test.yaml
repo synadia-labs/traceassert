@@ -1,0 +1,72 @@
+name: Unit Testing
+
+permissions:
+  contents: read
+
+on: [push, pull_request]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+
+      - name: Install deps
+        shell: bash --noprofile --norc -x -eo pipefail {0}
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          go install github.com/client9/misspell/cmd/misspell@latest
+
+      - name: Run linters
+        shell: bash --noprofile --norc -x -eo pipefail {0}
+        run: |
+          $(exit $(go fmt ./... | wc -l))
+          go vet ./...
+          staticcheck ./...
+          find . -type f -name "*.go" | xargs misspell -error -locale US
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+
+      - name: Run tests
+        shell: bash --noprofile --norc -x -eo pipefail {0}
+        run: |
+          go test -v -count=1 ./...
+
+  # Each example is its own module, built against this checkout through a
+  # replace, with a Ginkgo suite that checks the captures in its testdata.
+  examples:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        example: [adr-50, info_requests, shaped]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+
+      - name: Run ${{ matrix.example }} suite
+        working-directory: examples/${{ matrix.example }}
+        shell: bash --noprofile --norc -x -eo pipefail {0}
+        run: |
+          go vet ./...
+          go run github.com/onsi/ginkgo/v2/ginkgo -r -v --no-color
