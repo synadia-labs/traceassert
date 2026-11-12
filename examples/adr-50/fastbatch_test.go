@@ -289,7 +289,7 @@ var _ = Describe("ADR-50 fast-ingest batch publishing", func() {
 					"single immediate commit must not be preceded by a BatchFlowAck")
 			}
 			Expect(replies[len(replies)-1]).To(DecodeJetStreamAs("io.nats.jetstream.api.v1.pub_ack_response",
-				HaveField("BatchSize", Equal(1))))
+				HaveField("BatchSize", Equal(uint64(1)))))
 		})
 	})
 })
@@ -307,8 +307,8 @@ func lastCommitAck(replies []*traceassert.Event) *traceassert.Event {
 
 // expectedCount is the BatchSize the server should report: commit-store stores the
 // final message (count == messages sent); commit-eob does not (count == sent-1).
-func expectedCount(nonPing []*traceassert.Event) int {
-	n := len(nonPing)
+func expectedCount(nonPing []*traceassert.Event) uint64 {
+	n := uint64(len(nonPing))
 	if opOf(nonPing[n-1]) == opCommitEOB {
 		n--
 	}
