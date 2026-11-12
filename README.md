@@ -87,6 +87,17 @@ such as `drop`, `stall`, `throttle` or `disconnect`. The key is absent on every 
 alone, and the format version stays 2: a reader ignores keys it does not know, so a capture
 written before the key existed loads with no frame shaped.
 
+An `UNSUB` line carries a `max_msgs` key when the client gave a max, an auto-unsubscribe
+after that many messages (`UNSUB 1 5`):
+
+```json
+{"line":9,"at":"2026-01-01T00:00:00Z","dir":"to_server","verb":"UNSUB","sid":"1","max_msgs":5,"bytes":11}
+```
+
+The key is absent on an `UNSUB` that gave none (`UNSUB 1`), which removes the subscription at
+once, and on every other frame; such a frame, and every frame of a capture written before the
+key existed, loads with a `MaxMsgs` of 0.
+
 ### Loading a capture
 
 Suites rarely call `LoadExpanded` directly. These helpers resolve a fixture by name and
@@ -248,6 +259,7 @@ type Event struct {
     Queue   string
     Header  map[string][]string // HPUB/HMSG headers
     Payload []byte              // body; for CONNECT/INFO the JSON, for -ERR the error text
+    MaxMsgs int                 // UNSUB max_msgs (auto-unsubscribe after that many messages), 0 if none
     WireBytes int               // size of the raw on-the-wire frame (verb+subject+headers+framing), 0 if unknown
     Shaped  *Shaped             // set when a traffic-shaping proxy acted on the frame, nil otherwise
     Conn    int                 // index of the event's trace in its Session; 0 on a trace loaded on its own

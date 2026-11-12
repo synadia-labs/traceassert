@@ -38,7 +38,9 @@ type expandedHeaderLine struct {
 
 // expandedEvent mirrors Event for serialization, one per line. Dir is written as its
 // string form ("to_server"/"from_server") rather than the raw enum, and Payload rides
-// along as base64 (encoding/json's default for []byte).
+// along as base64 (encoding/json's default for []byte). The max_msgs key is written
+// only on an UNSUB that gave a max, and absent throughout a capture written before the
+// key existed; either way the event loads with a MaxMsgs of 0.
 type expandedEvent struct {
 	Line    int                 `json:"line"`
 	At      time.Time           `json:"at"`
@@ -51,6 +53,7 @@ type expandedEvent struct {
 	Queue   string              `json:"queue,omitempty"`
 	Header  map[string][]string `json:"header,omitempty"`
 	Payload []byte              `json:"payload,omitempty"`
+	MaxMsgs int                 `json:"max_msgs,omitempty"`
 	Bytes   int                 `json:"bytes,omitempty"`
 	Shaped  *expandedShaped     `json:"shaped,omitempty"`
 }
@@ -87,6 +90,7 @@ func toExpandedEvent(e *Event) expandedEvent {
 		Queue:   e.Queue,
 		Header:  e.Header,
 		Payload: e.Payload,
+		MaxMsgs: e.MaxMsgs,
 		Bytes:   e.WireBytes,
 		Shaped:  shaped,
 	}
@@ -113,6 +117,7 @@ func (ee *expandedEvent) toEvent() *Event {
 		Queue:     ee.Queue,
 		Header:    ee.Header,
 		Payload:   ee.Payload,
+		MaxMsgs:   ee.MaxMsgs,
 		WireBytes: ee.Bytes,
 		Shaped:    shaped,
 	}

@@ -40,6 +40,7 @@ type frame struct {
 	sid     string
 	header  map[string][]string
 	payload []byte
+	maxMsgs int // UNSUB max_msgs, 0 for none
 	raw     []byte
 	shaped  *expShaped // set by Shaped; only the expanded output carries it
 }
@@ -109,6 +110,18 @@ func (b *Builder) Connect(json string) *Builder {
 func (b *Builder) Sub(subject, sid string) *Builder {
 	return b.add(frame{dir: "backend", verb: "SUB", subject: subject, sid: sid,
 		raw: fmt.Appendf(nil, "SUB %s %s\r\n", subject, sid)})
+}
+
+// Unsub adds a client UNSUB of sid. A maxMsgs above 0 is written as the frame's
+// max_msgs, an auto-unsubscribe after that many messages; 0 or below writes none.
+func (b *Builder) Unsub(sid string, maxMsgs int) *Builder {
+	raw := fmt.Appendf(nil, "UNSUB %s\r\n", sid)
+	if maxMsgs > 0 {
+		raw = fmt.Appendf(nil, "UNSUB %s %d\r\n", sid, maxMsgs)
+	} else {
+		maxMsgs = 0
+	}
+	return b.add(frame{dir: "backend", verb: "UNSUB", sid: sid, maxMsgs: maxMsgs, raw: raw})
 }
 
 // Pub adds a client PUB (reply may be empty).
@@ -272,6 +285,7 @@ type expEvent struct {
 	SID     string              `json:"sid,omitempty"`
 	Header  map[string][]string `json:"header,omitempty"`
 	Payload []byte              `json:"payload,omitempty"`
+	MaxMsgs int                 `json:"max_msgs,omitempty"`
 	Bytes   int                 `json:"bytes,omitempty"`
 	Shaped  *expShaped          `json:"shaped,omitempty"`
 }
@@ -314,6 +328,7 @@ func (b *Builder) ExpandedBytes(footer bool) []byte {
 			SID:     f.sid,
 			Header:  f.header,
 			Payload: f.payload,
+			MaxMsgs: f.maxMsgs,
 			Bytes:   len(f.raw),
 			Shaped:  f.shaped,
 		})
