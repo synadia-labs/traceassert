@@ -178,8 +178,76 @@ func TestExpanded_RoundTripShaped(t *testing.T) {
 	checkShaped("scanner", streamed)
 }
 
+// TestExpanded_RoundTripUnsubMax checks that an UNSUB's max_msgs survives the initial
+// expanded render, a WriteExpanded round trip and the streaming scanner, that the key
+// is written only on the UNSUB that gave a max, and that an UNSUB without one loads
+// with a MaxMsgs of 0.
+func TestExpanded_RoundTripUnsubMax(t *testing.T) {
+	b := tracegen.New("client")
+	b.Info(`{"server_id":"test"}`)
+	b.Connect("{}")
+	b.Sub("ORDERS", "1")
+	b.Unsub("1", 5)
+	b.Unsub("1", 0)
+
+	want := []int{0, 0, 0, 5, 0}
+	check := func(stage string, tr *Trace) {
+		t.Helper()
+		if len(tr.Events) != len(want) {
+			t.Fatalf("%s: %d events, want %d", stage, len(tr.Events), len(want))
+		}
+		for i, e := range tr.Events {
+			if e.MaxMsgs != want[i] {
+				t.Errorf("%s: %s MaxMsgs = %d, want %d", stage, e, e.MaxMsgs, want[i])
+			}
+		}
+		if tr.Events[3].Verb != "UNSUB" || tr.Events[3].SID != "1" || tr.Events[4].Verb != "UNSUB" || tr.Events[4].SID != "1" {
+			t.Errorf("%s: events 3 and 4 are %s and %s, want the two UNSUBs of sid 1", stage, tr.Events[3], tr.Events[4])
+		}
+	}
+
+	first := loadExpanded(t, b)
+	check("render", first)
+
+	var buf bytes.Buffer
+	if err := WriteExpanded(&buf, first); err != nil {
+		t.Fatalf("WriteExpanded: %v", err)
+	}
+	if n := bytes.Count(buf.Bytes(), []byte(`"max_msgs":5`)); n != 1 {
+		t.Errorf("written document has %d max_msgs keys of 5, want 1:\n%s", n, buf.Bytes())
+	}
+	if n := bytes.Count(buf.Bytes(), []byte(`"max_msgs"`)); n != 1 {
+		t.Errorf("written document has %d max_msgs keys, want only the one that was set:\n%s", n, buf.Bytes())
+	}
+
+	path := filepath.Join(t.TempDir(), "unsub.expanded.json")
+	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	second, err := LoadExpanded(path)
+	if err != nil {
+		t.Fatalf("LoadExpanded: %v", err)
+	}
+	check("writer", second)
+
+	s, err := ScanExpanded(path)
+	if err != nil {
+		t.Fatalf("ScanExpanded: %v", err)
+	}
+	defer s.Close()
+	streamed := &Trace{}
+	for e, err := range s.Events() {
+		if err != nil {
+			t.Fatalf("stream: %v", err)
+		}
+		streamed.Events = append(streamed.Events, e)
+	}
+	check("scanner", streamed)
+}
+
 // TestLoadExpanded_WithoutShapedKey checks that a v2 document written before the
-// "shaped" key existed loads with a nil Shaped on every event.
+// "shaped" and "max_msgs" keys existed loads with a nil Shaped and a MaxMsgs of 0 on
+// every event.
 func TestLoadExpanded_WithoutShapedKey(t *testing.T) {
 	doc := `{"format":"traceassert-expanded","version":2,"header":{"version":1,"device":"test","protocol":"client"}}
 {"line":2,"at":"2026-01-01T00:00:00Z","dir":"from_server","verb":"INFO","payload":"e30="}
@@ -201,6 +269,9 @@ func TestLoadExpanded_WithoutShapedKey(t *testing.T) {
 	for _, e := range tr.Events {
 		if e.Shaped != nil {
 			t.Errorf("%s Shaped = %+v, want nil", e, e.Shaped)
+		}
+		if e.MaxMsgs != 0 {
+			t.Errorf("%s MaxMsgs = %d, want 0", e, e.MaxMsgs)
 		}
 	}
 }
